@@ -67,9 +67,11 @@ jobs:
         env: { CC: clang, CXX: clang++ }
         run: cmake --preset tsan
       - run: cmake --build build/tsan
-      # The concurrency label is empty until M1 lands the ring buffer; until
-      # then this job exists to keep the preset honest.
-      - run: ctest --preset tsan || true
+      # The concurrency label covers the SPSC ring's two-thread stress and the
+      # tap's cross-process tests. ThreadSanitizer over the single-threaded
+      # matching core would be pure overhead with nothing to find, which is
+      # why the preset filters rather than running everything.
+      - run: ctest --preset tsan
 
   reconstruction:
     name: LOBSTER validation -- C++ and Python reconstructions agree
@@ -177,17 +179,20 @@ jobs:
         run: bash scripts/check_no_floats.sh
 
   python:
-    name: ruff + pytest (pyref)
+    name: ruff + pytest (no C++ build present)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: '3.11' }
-      - run: pip install ruff pytest
+      - run: pip install ruff pytest pytest-asyncio websockets
       - name: Lint
-        run: ruff check pyref
-      - name: Test (oracle alone, no C++ build present)
-        run: pytest -q pyref
+        run: ruff check pyref viz scripts
+      # The oracle and the viz server's pure-logic tests must pass with no C++
+      # build present at all -- that independence is the point of pyref, and
+      # the tests that need a binary skip rather than fail.
+      - name: Test with no C++ build present
+        run: pytest -q
 
   differential:
     name: differential -- 1000 sequences x 1000 commands
