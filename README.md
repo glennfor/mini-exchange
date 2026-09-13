@@ -4,7 +4,8 @@ A price-time-priority limit order book matching engine, a zero-copy Nasdaq
 ITCH 5.0 feed decoder, and the benchmark and validation machinery needed to
 believe the numbers — in modern C++20.
 
-> **Status: under construction.** Milestone 0 (skeleton) is complete.
+> **Status: under construction.** Milestones 0-2 are complete: build
+> skeleton, core primitives, and a correct matching engine over `NaiveBook`.
 > No performance number appears in this README until it has been measured on
 > a machine whose configuration is committed next to it. Where a number is
 > not yet measured, this file says `TBD` and nothing else.

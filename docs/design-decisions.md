@@ -199,3 +199,165 @@ conversion explicit and auditable: Q32 resolves 2.3e-10 ns per tick, which
 is four orders of magnitude finer than the counter itself, so the conversion
 contributes nothing to the error budget and the whole error is the hardware's.
 With a `double` you would have to reason about it; here you can read it off.
+
+---
+
+## DD-010 — Matching lives in the engine, storage lives in the book
+
+**Context.** The obvious place to put `match()` is on the order book. Most
+"order book in C++" repositories do exactly that.
+
+**Choice.** The book owns storage, price ordering, FIFO ordering within a
+level, and level aggregates, and nothing else. All matching policy — which
+orders cross, what price a trade prints at, what a replace does to priority,
+what a fill-or-kill pre-scan counts — lives in `MatchingEngine`.
+
+**Why.** Policy and mechanism. But the concrete payoff is differential
+testing: `NaiveBook` and `FastBook` are two implementations of the *same
+mechanism*, so running one engine over both must produce byte-identical event
+streams, and any difference is a storage bug. If matching lived in the book
+there would be two implementations of the policy as well, and agreement
+between them would prove much less — the two could agree on a shared
+misreading of section 8.
+
+The second payoff is that the book stays testable on its own terms: "does a
+cancel keep the level aggregate correct" is a question with an answer that
+does not mention trades.
+
+---
+
+## DD-011 — A crossing replace is matched by the same code path as a new order
+
+**Context.** Spec question 25.3: where does a replace that crosses the book
+get matched, and which path assigns the sequence numbers?
+
+**Choice.** `on_replace` removes the resting order, emits `Replaced`, and
+then calls the same private `accept()` that `on_new` calls after validation.
+There is exactly one matching loop in the engine and it assigns every
+sequence number.
+
+**Why.** A second matching path is a second place for the price-time rules to
+be subtly different, and the difference would only show up in the one case
+nobody writes a directed test for. It also means the replace inherits, for
+free and by construction, every property the new-order path has: trades print
+at the resting price, the residual rests at the tail, the sequence numbers
+are contiguous.
+
+**Consequence.** The event order for a crossing replace is `Replaced` then
+`Trade`s, which is what `ReplacedEventPrecedesTheTradesItCauses` pins down.
+The alternative ordering (trades first, then a `Replaced` describing the
+residual) was rejected because it would report a priority change that had
+already been consumed.
+
+---
+
+## DD-012 — A tagged union, not `std::variant`, for commands
+
+**Context.** `Command` is pushed through the SPSC ring by the millions.
+
+**Choice.** An explicit `CommandType` discriminant plus an anonymous union.
+
+**Why.** Three concrete reasons. (a) `std::variant` is only trivially
+copyable when every alternative is, and its layout is not guaranteed, so
+`memcpy`ing one into a shared-memory ring is not something the standard
+promises will work. (b) `std::visit` is commonly a function-pointer table
+that the optimiser does not always collapse, while a `switch` on a `uint8_t`
+becomes a jump table reliably. (c) The union form is 48 bytes with the
+discriminant in the first byte, which is what the tap and the recorded
+command format want anyway.
+
+**Consequence.** TBD — the `variant` comparison belongs in `bench/micro` at
+M4. Until it has been run, this entry claims a design preference with
+reasons, not a measured win.
+
+---
+
+## DD-013 — One `Event` type with a tag, not seven event structs
+
+**Context.** Spec 9.2 sketches per-type outbound structs.
+
+**Choice.** A single 64-byte `Event` with an `EventType` tag.
+
+**Why.** The event stream has three consumers — the test sink, the canonical
+text format used for differential testing, and the shared-memory tap — and
+each of them wants a uniform record. With per-type structs, the sink
+interface becomes seven functions, the text formatter becomes seven
+formatters that must stay in sync with seven Python formatters, and the tap
+needs a union anyway. The cost is a few unused fields per event, which is
+free: the record is one cache line either way.
+
+**Consequence.** Every event carries `counter_id`, `match_id` and `reason`
+even where they are zero, and the canonical text format prints all of them.
+That verbosity is deliberate: a differential diff that omits a field cannot
+catch a bug in it.
+
+---
+
+## DD-014 — A `Fill` event as well as a `Trade` event
+
+**Context.** One match involves two orders. The public print says what
+happened; it does not say what is left on the resting order.
+
+**Choice.** Each match emits a `Trade` (the public print: aggressor, resting,
+price, quantity, aggressor's remaining) and a `Fill` for the resting order
+carrying *its* remaining quantity.
+
+**Why.** Without the `Fill`, the resting order's remaining quantity is not
+recoverable from the event stream alone — a consumer would have to maintain
+its own book to know it. That would make the `ShareLedger` invariant checker
+dependent on a book implementation, which defeats the point of having it
+re-derive share conservation independently.
+
+**Consequence.** Two events per match rather than one. With `NullSink` in
+benchmarks this costs nothing; with the tap on it doubles the tap's event
+rate, which is a number that will be published alongside the tap-on/tap-off
+comparison rather than hidden.
+
+---
+
+## DD-015 — A bounded memory of completed order ids
+
+**Context.** Spec question 25.4: how is "already filled" distinguished from
+"never existed" on a cancel, and what does that cost?
+
+**Choice.** A FIFO ring of the last `kCompletedRingCapacity` (65536)
+completed ids with an open-addressed set beside it for O(1) membership.
+1.5 MB at the default size.
+
+**Why.** Answering exactly would mean remembering every id for the whole run:
+tens of millions of ids on a real day, and unbounded is not a property a
+latency-sensitive system may have. Bounding it makes the memory a constant
+and pushes the imprecision to a place that can be stated: **an order that
+completed more than 65536 completions ago reports `UnknownOrder` rather than
+`TooLateToCancel`.** At realistic completion rates that window is seconds,
+which is far longer than any cancel can plausibly be in flight.
+
+The alternative — a timestamp-based expiry — would need a clock read on the
+cancel path, and the engine does not read clocks (DD-016).
+
+---
+
+## DD-016 — The caller assigns timestamps; the engine never reads a clock
+
+**Context.** Spec question 25.5 asks for this to be confirmed and justified.
+
+**Choice.** `TsNanos` arrives with every `Command` and is copied onto every
+event it causes. `MatchingEngine` contains no call to any clock.
+
+**Why.** Two reasons, both load-bearing.
+
+*Determinism.* If the engine timestamped events itself, replaying the same
+command file would produce a different event stream every time, and the
+byte-identical replay guarantee — which is how `FastBook` is checked against
+`NaiveBook` and how both are checked against the Python oracle — would be
+impossible to state, let alone test.
+
+*Benchmark honesty.* A clock read is 20–30 ns on most platforms. An engine
+that read the clock once per command would be measuring the clock as much as
+the matching, and every published per-operation number would silently include
+it.
+
+The cost is that the engine cannot enforce anything about time — it cannot
+reject a stale order or expire a Day order at the close. Both belong in a
+session layer above the matching core, which is where a real exchange puts
+them too.

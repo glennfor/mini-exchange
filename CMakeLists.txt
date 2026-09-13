@@ -56,6 +56,23 @@ if(MINIEX_TAP)
 endif()
 
 # ---------------------------------------------------------------------------
+# Provenance: every tool prints the build type and git SHA that produced it.
+# ---------------------------------------------------------------------------
+find_package(Git QUIET)
+set(MINIEX_GIT_SHA "unknown")
+if(GIT_FOUND)
+  execute_process(
+    COMMAND "${GIT_EXECUTABLE}" rev-parse --short HEAD
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+    OUTPUT_VARIABLE MINIEX_GIT_SHA
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET)
+endif()
+target_compile_definitions(miniex_flags INTERFACE
+  MINIEX_GIT_SHA="${MINIEX_GIT_SHA}"
+  MINIEX_BUILD_TYPE="$<CONFIG>")
+
+# ---------------------------------------------------------------------------
 # Third-party dependencies (fetched, never vendored -- see spec 3.3)
 # ---------------------------------------------------------------------------
 find_package(Threads REQUIRED)
@@ -106,3 +123,9 @@ endfunction()
 # Modules
 # ---------------------------------------------------------------------------
 add_subdirectory(core)
+add_subdirectory(book)
+add_subdirectory(engine)
+
+if(MINIEX_BUILD_TOOLS)
+  add_subdirectory(tools)
+endif()
