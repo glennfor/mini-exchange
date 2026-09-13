@@ -478,7 +478,7 @@ Deliberately **not** implemented, and explained in
 |---|---|
 | `docs/architecture.md` | module boundaries, threading model, wire formats |
 | `docs/matching-semantics.md` | the behavioural contract, and the oracle's source |
-| `docs/design-decisions.md` | 33 decisions: context, options, choice, measured consequence |
+| `docs/design-decisions.md` | 34 decisions: context, options, choice, measured consequence |
 | `docs/benchmarking.md` | the methodology, and what the harness refuses to do |
 | `docs/validation.md` | what has and has not been validated |
 | `docs/divergence.md` | why ITCH replay is not what it sounds like |

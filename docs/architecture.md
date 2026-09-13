@@ -51,8 +51,11 @@ core  ←  book  ←  engine  ←  tools / bench
   hierarchical bitset, a cycle counter.
 * `book/` knows nothing about ITCH. It owns storage and ordering.
 * `engine/` knows nothing about the UI or the feed. It owns matching policy.
-* `viz/` is removable: the engine builds and the whole test suite passes with
-  it absent, and the tap compiles out entirely when `MINIEX_TAP=OFF`.
+* `viz/` is removable, and this is **checked rather than asserted**: delete
+  the `viz/` directory and its two tools from a fresh clone and the engine
+  still builds and 267 of the 283 tests pass — the missing 16 being exactly
+  the tap's own. The tap also compiles out entirely when `MINIEX_TAP=OFF`:
+  the segment name is not even present in the resulting binary's strings.
 
 ## Threading model
 
