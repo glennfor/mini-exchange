@@ -14,6 +14,10 @@ target_link_libraries(engine_bench PRIVATE miniex_bench_support)
 
 add_executable(micro_bench
   micro/book_bench.cpp
-  micro/core_bench.cpp)
+  micro/core_bench.cpp
+  micro/feed_bench.cpp)
 target_link_libraries(micro_bench PRIVATE
-  miniex_bench_support benchmark::benchmark benchmark::benchmark_main)
+  miniex_bench_support miniex::feed benchmark::benchmark
+  benchmark::benchmark_main)
+# feed_bench.cpp uses the test-only ITCH encoder to build its input stream.
+target_include_directories(micro_bench PRIVATE "${CMAKE_SOURCE_DIR}/feed")

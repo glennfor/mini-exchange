@@ -71,6 +71,29 @@ jobs:
       # then this job exists to keep the preset honest.
       - run: ctest --preset tsan || true
 
+  fuzz:
+    name: libFuzzer -- ITCH decoder, 60s with ASan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y ninja-build clang
+      - name: Configure
+        env: { CC: clang, CXX: clang++ }
+        run: cmake --preset fuzz
+      - run: cmake --build build/fuzz
+      - name: Fuzz for 60 seconds from the committed seeds
+        run: |
+          ./build/fuzz/feed/fuzz/fuzz_itch \
+            -max_total_time=60 -print_final_stats=1 \
+            -artifact_prefix="$RUNNER_TEMP/" \
+            feed/fuzz/corpus
+      - name: Upload any crashing input
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts
+          path: ${{ runner.temp }}/{crash,leak,timeout}-*
+
   lint:
     name: clang-format + clang-tidy
     runs-on: ubuntu-latest

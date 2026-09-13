@@ -60,6 +60,18 @@
       }
     },
     {
+      "name": "fuzz",
+      "inherits": "base",
+      "displayName": "fuzz -- libFuzzer over the ITCH decoder, with ASan",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CMAKE_CXX_FLAGS": "-O2 -g -fno-omit-frame-pointer",
+        "MINIEX_BUILD_FUZZ": "ON",
+        "MINIEX_BUILD_TESTS": "OFF",
+        "MINIEX_BUILD_TOOLS": "OFF"
+      }
+    },
+    {
       "name": "release",
       "inherits": "base",
       "displayName": "release -- -O3, native, LTO, benchmarks on",
@@ -121,6 +133,10 @@
     {
       "name": "release-portable",
       "configurePreset": "release-portable"
+    },
+    {
+      "name": "fuzz",
+      "configurePreset": "fuzz"
     }
   ],
   "testPresets": [

@@ -84,3 +84,12 @@ __pycache__/
 .ruff_cache/
 perf.data*
 *.svg.tmp
+
+# libFuzzer writes discovered inputs into the corpus directory; only the
+# hand-made seeds (*.bin) are committed.
+feed/fuzz/corpus/*
+!feed/fuzz/corpus/*.bin
+!feed/fuzz/corpus/README.md
+crash-*
+leak-*
+timeout-*

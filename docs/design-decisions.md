@@ -550,3 +550,43 @@ after the fast one passes is deleting the reason to believe the fast one.
 The corollary is a rule: **never optimise `NaiveBook`.** The moment it becomes
 clever it stops being an independent check and becomes a second copy of the
 same assumptions.
+
+---
+
+## DD-024 — `switch` dispatch in the ITCH decoder, with all three numbers published
+
+**Context.** Spec 10.4 asks for `switch` to be measured against a 256-entry
+function-pointer table and against computed goto, and for all three numbers to
+be recorded.
+
+**Measured** (development machine, under load; ratios are the usable part —
+full table and caveats in `docs/itch-notes.md`):
+
+| Strategy | messages/s | vs switch |
+|---|---|---|
+| Computed goto | 116.3 M | 1.18x |
+| `switch` | 98.7 M | 1.00x |
+| Function-pointer table | 94.4 M | 0.96x |
+
+**Choice.** `switch`. Both alternatives stay in the tree — the table in the
+header behind `DispatchMode`, computed goto in the benchmark — so the
+comparison is reproducible rather than a claim.
+
+**Why not the table.** It is slower. A dense character `switch` compiles to a
+bounds check plus a jump table, and that bounds check is cheaper than an
+indirect call through a pointer the branch predictor has to learn. It also
+loses exhaustiveness: a `switch` missing a case is a `-Wswitch` warning and
+this project builds `-Werror`; a table silently defaults.
+
+**Why not computed goto, despite winning.** It is a GNU extension
+(`&&label`, `goto *`), and the project bans extensions in public headers
+(spec 3.1) because `feed/itch50.hpp` has to compile under any conforming
+C++20 compiler. An 18% gain on a decoder already running at 600 MB/s — one
+that is not the bottleneck in anything built on it — does not buy out that
+constraint.
+
+**A note on the measurement itself.** The computed-goto benchmark initially
+looked 25% faster, because it was skipping the per-type counter bookkeeping
+the real decoder does. Corrected, the gap is 18%. Two loops doing different
+amounts of work are not a comparison, and the first number would have been a
+flattering lie about an option that was not going to be taken anyway.

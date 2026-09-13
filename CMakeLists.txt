@@ -25,6 +25,7 @@ option(MINIEX_BUILD_TOOLS "Build the command-line tools" ON)
 option(MINIEX_TAP         "Compile the observability tap into the engine" OFF)
 option(MINIEX_WERROR      "Treat warnings as errors" ON)
 option(MINIEX_NATIVE      "Build with -march=native" OFF)
+option(MINIEX_BUILD_FUZZ  "Build the libFuzzer targets (needs clang)" OFF)
 
 include(MiniExchangeConfig)
 
@@ -154,6 +155,7 @@ endfunction()
 # ---------------------------------------------------------------------------
 add_subdirectory(core)
 add_subdirectory(book)
+add_subdirectory(feed)
 add_subdirectory(engine)
 add_subdirectory(replay)
 

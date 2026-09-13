@@ -6,3 +6,7 @@ target_link_libraries(miniex_tool_support INTERFACE miniex_flags miniex::core)
 add_executable(engine_replay engine_replay.cpp)
 target_link_libraries(engine_replay PRIVATE
   miniex_flags miniex::engine miniex::replay miniex_tool_support)
+
+add_executable(itch_stats itch_stats.cpp)
+target_link_libraries(itch_stats PRIVATE
+  miniex_flags miniex::feed miniex_tool_support)
