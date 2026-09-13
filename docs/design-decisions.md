@@ -361,3 +361,73 @@ The cost is that the engine cannot enforce anything about time — it cannot
 reject a stale order or expire a Day order at the close. Both belong in a
 session layer above the matching core, which is where a real exchange puts
 them too.
+
+---
+
+## DD-017 — The oracle talks to the engine only through text files
+
+**Context.** Spec 15.1 requires the Python oracle to be independent of the
+C++ implementation. "Independent" is easy to claim and easy to lose.
+
+**Choice.** `pyref/` imports nothing from the C++ build, links against
+nothing, and has no bindings. The only contact between the two
+implementations is `differential.py` writing a command file, running the
+compiled `engine_replay` as a subprocess, and diffing two lists of strings.
+The oracle's own test suite (`pyref/tests/test_semantics.py`) passes with no
+C++ build present at all; the cross-implementation tests skip.
+
+**Why.** Bindings would create exactly the coupling the oracle exists to
+avoid: a shared enum, a shared struct layout, a shared idea of what "replace"
+means. The subprocess boundary costs a few milliseconds per sequence and buys
+a guarantee that the only thing the two implementations share is the
+specification document.
+
+It also means the oracle is written from `docs/matching-semantics.md` rather
+than from the header, which is the point of having it. Where the two
+disagreed during development, the document decided which one was wrong.
+
+---
+
+## DD-018 — Mutation testing, because a green differential test proves nothing
+
+**Context.** A differential test that has never failed is indistinguishable
+from one that cannot fail.
+
+**Choice.** `pyref/tests/test_differential.py` injects three known bugs into
+a subclass of the reference engine — trade at the aggressor's price, size-down
+loses priority, LIFO within a level — and asserts that the comparison notices
+each one *and* that the shrinker reduces it to a 1-minimal reproducer.
+
+**Consequence, and the reason this entry exists.** The "size-down loses
+priority" mutant was initially **not caught**, because the random flow
+generator re-randomised the price on every replace and therefore almost never
+produced a replace at the order's own price. The single replace rule that
+*keeps* time priority was going untested by the differential suite. The
+generator now emits same-price size-downs and same-price size-ups
+deliberately, at 35% and 20% of replaces.
+
+That is the argument for mutation testing in one paragraph: the differential
+suite was green, had been green for every seed tried, and had a hole in it.
+
+---
+
+## DD-019 — The shrinker runs to a fixpoint, not just to "smaller"
+
+**Context.** A 1000-command failure is not a bug report.
+
+**Choice.** Three stages: binary search for the shortest failing prefix,
+delta-debugging chunk removal with halving chunk sizes, then single-command
+removal repeated until a whole pass changes nothing.
+
+**Why the fixpoint matters.** The first implementation stopped after one
+single-removal pass and produced 16-command "minimal" reproducers containing
+commands that were plainly irrelevant — an unknown-id cancel, orders at
+prices nowhere near the failure. A reader then has to work out which of the
+sixteen lines matters, which is most of the work the shrinker was supposed to
+do. Removing one command can make an earlier one removable, so one pass is
+not enough. The mutation tests assert 1-minimality directly: for each
+remaining command, removing it must make the failure disappear.
+
+**Cost.** More runs of the engine per failure — O(n log n) subprocess calls
+rather than O(n). That is paid only when something is already broken, which
+is the right place to spend time.

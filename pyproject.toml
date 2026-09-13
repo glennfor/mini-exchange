@@ -1,0 +1,31 @@
+[project]
+name = "miniex-pyref"
+version = "0.1.0"
+description = "Independent reference oracle for the mini-exchange matching engine"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.6", "numpy", "pandas", "matplotlib"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+src = ["pyref"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
+ignore = [
+  # The reference oracle is deliberately written as long, flat, obvious
+  # procedures that mirror the semantics document section by section.
+  # Splitting on_new() into helpers to satisfy a complexity metric would make
+  # it harder, not easier, to check against the document.
+  "B008",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"pyref/tests/*" = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["pyref"]
+addopts = "-q"

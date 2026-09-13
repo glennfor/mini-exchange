@@ -104,11 +104,57 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: '3.11' }
-      - name: Install
-        run: pip install ruff pytest numpy pandas
+      - run: pip install ruff pytest
       - name: Lint
+        run: ruff check pyref
+      - name: Test (oracle alone, no C++ build present)
+        run: pytest -q pyref
+
+  differential:
+    name: differential -- 1000 sequences x 1000 commands
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.11' }
+      - run: sudo apt-get update && sudo apt-get install -y ninja-build
+      - run: pip install pytest
+      - name: Build the engine
+        env: { CC: clang, CXX: clang++ }
+        run: cmake --preset release && cmake --build build/release --target engine_replay
+      - name: Reference vs C++ engine
         run: |
-          if [ -d pyref ]; then ruff check pyref; else echo "pyref not present yet"; fi
-      - name: Test
+          python -m pyref.differential \
+            --engine build/release/tools/engine_replay \
+            --seeds 1000 --length 1000 --out-dir "$RUNNER_TEMP/repro"
+      - name: Reference vs C++ engine, self-trade prevention on
         run: |
-          if [ -d pyref/tests ]; then pytest -q pyref; else echo "pyref tests not present yet"; fi
+          python -m pyref.differential \
+            --engine build/release/tools/engine_replay --stp \
+            --seeds 200 --length 1000 --out-dir "$RUNNER_TEMP/repro"
+      - name: Upload any minimised reproducer
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: differential-reproducers
+          path: ${{ runner.temp }}/repro
+
+  determinism:
+    name: determinism -- same input twice, and across -O levels
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y ninja-build
+      - name: Build at -O3 and at -O0
+        env: { CC: clang, CXX: clang++ }
+        run: |
+          cmake --preset release && cmake --build build/release --target engine_replay
+          cmake --preset dev && cmake --build build/dev --target engine_replay
+      - name: Record, replay, and compare across optimisation levels
+        run: |
+          set -eux
+          ./build/release/tools/engine_replay --record run_a.events
+          ./build/release/tools/engine_replay --record run_b.events
+          cmp run_a.events run_b.events
+          ./build/dev/tools/engine_replay --verify run_a.events
+          ./build/release/tools/engine_replay --verify run_a.events
