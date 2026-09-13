@@ -314,7 +314,7 @@ vendored.
 
 ```bash
 cmake --preset release && cmake --build build/release
-ctest --preset release                     # 283 tests, ~20 s from a clean clone
+ctest --preset release                     # 283 tests
 
 # the Python oracle and the viz server
 python3.11 -m venv .venv && .venv/bin/pip install -e '.[dev]'
@@ -323,6 +323,11 @@ python3.11 -m venv .venv && .venv/bin/pip install -e '.[dev]'
 # the UI
 cd viz/ui && npm install && npm test       # 32 tests
 ```
+
+Verified from a fresh `git clone` on the development machine: **12 seconds to
+build, 13 seconds to run all 283 C++ tests.** That check is worth running
+rather than assuming — it is how the missing LOBSTER fixture in the "what I
+got wrong" list below was found.
 
 Presets: `dev`, `ubsan`, `asan`, `tsan`, `fuzz`, `release`, `release-tap`,
 `release-portable`.
