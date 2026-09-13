@@ -82,7 +82,7 @@ static_assert(kMarketSellPrice != kInvalidPrice);
 static_assert(kMarketSellPrice < kMarketBuyPrice);
 
 /// Sentinel for an unset 32-bit pool index. Index 0 is a valid order.
-inline constexpr std::uint32_t kInvalidIndex = 0xFFFFFFFFu;
+inline constexpr std::uint32_t kInvalidIndex = 0xFFFFFFFFU;
 
 /// Sentinel for an unset price-level index.
 inline constexpr std::uint32_t kInvalidLevel = kInvalidIndex;

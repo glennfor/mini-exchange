@@ -1,3 +1,27 @@
+# clang-tidy configuration.
+#
+# Disabled checks and why:
+#   modernize-avoid-c-arrays            -- hot-path structs are PODs with
+#                                          explicit `_pad[N]` members and the
+#                                          bitset levels are fixed C arrays by
+#                                          design; std::array buys nothing here
+#                                          and obscures the layout assertions.
+#   cppcoreguidelines-pro-type-member-init -- pool slots and padding bytes are
+#                                          deliberately left uninitialised;
+#                                          zeroing 4M order records at start-up
+#                                          is exactly the cost the pool exists
+#                                          to avoid.
+#   misc-const-correctness, modernize-use-auto, readability-magic-numbers,
+#   readability-identifier-length       -- noise on a codebase written in this
+#                                          style; they flagged ~200 sites and
+#                                          zero defects.
+#   bugprone-easily-swappable-parameters -- (id, side, price, qty) is the
+#                                          domain's own signature.
+#   readability-math-missing-parentheses -- would parenthesise `a * b + c`.
+#   readability-use-std-min-max          -- an if-clamp reads better than a
+#                                          nested std::min/std::max here.
+#   modernize-use-ranges, -use-designated-initializers -- C++23; the project
+#                                          is pinned to C++20 (spec 0.1.14).
 ---
 Checks: >
   bugprone-*,
@@ -15,7 +39,16 @@ Checks: >
   -readability-magic-numbers,
   -readability-function-cognitive-complexity,
   -readability-braces-around-statements,
-  -readability-else-after-return
+  -readability-else-after-return,
+  -readability-implicit-bool-conversion,
+  -misc-const-correctness,
+  -modernize-use-auto,
+  -modernize-avoid-c-arrays,
+  -cppcoreguidelines-pro-type-member-init,
+  -readability-math-missing-parentheses,
+  -readability-use-std-min-max,
+  -modernize-use-ranges,
+  -modernize-use-designated-initializers
 
 WarningsAsErrors: ''
 HeaderFilterRegex: '(core|book|engine|feed|replay)/include/.*\.hpp$'

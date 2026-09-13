@@ -129,3 +129,73 @@ split is more honest than a preset that silently never runs.
 **Reproduce.** `printf 'int main(){}' > t.c && cc -fsanitize=address t.c -o t && ./t`
 hangs indefinitely on this machine; the same with `-fsanitize=undefined`
 exits immediately.
+
+---
+
+## DD-007 — Cached opposite counters in the SPSC ring
+
+**Context.** The ingress ring sits between the load generator and the
+matching core, on two different physical cores. A naive implementation puts
+`head` and `tail` next to each other and reads the opposite counter on every
+operation.
+
+**Choice.** Each counter gets its own 128-byte block, and each side keeps a
+*private, non-atomic* cached copy of the other side's counter, refreshed only
+when the ring appears full (producer) or empty (consumer).
+
+**Why.** Without the split, every push dirties the line the consumer is
+reading, and the line ping-pongs between cores at roughly 100 ns a round
+trip — which would be the dominant cost in a system whose whole point is
+sub-microsecond handling. Without the *cached* copy, the split alone is not
+enough: the producer would still read the consumer's live line on every push.
+The cached value can only be stale in the safe direction (the producer may
+believe the ring is fuller than it is, never emptier), so a stale read costs
+at most one wasted refresh, never a correctness bug.
+
+128 bytes rather than 64: Apple Silicon's L2 line is 128 bytes, and x86
+prefetches line pairs, so 64-byte separation still allows adjacent-line
+interference.
+
+**Consequence.** TBD — the with/without measurement belongs in M4, when the
+harness exists to make it honestly.
+
+---
+
+## DD-008 — Backward-shift deletion rather than tombstones
+
+**Context.** The `OrderId -> pool index` map is the hottest lookup in the
+system, and real equity flow is dominated by cancels, so erases are as
+frequent as inserts.
+
+**Options.** (a) tombstones plus a rehash when the tombstone fraction passes
+a threshold; (b) backward-shift deletion, which restores the invariant that
+a probe run is contiguous.
+
+**Choice.** (b).
+
+**Why.** Tombstones make `erase` trivially cheap and then charge for it
+later, all at once, in a rehash that touches the entire table. That is a
+latency cliff of milliseconds in the middle of a trading day — the single
+worst thing that can happen to a p99.9. Backward-shift deletion pays a
+short, bounded shift loop on each erase (expected length under 1 at a 0.5
+load factor) and never has a cliff. A system that is judged on its tail
+should prefer bounded work every time to unbounded work occasionally.
+
+---
+
+## DD-009 — Fixed-point, not floating point, for cycles-to-nanoseconds
+
+**Context.** `CycleCalibration` must convert counter ticks to nanoseconds,
+which is naturally a fractional ratio.
+
+**Choice.** Q32 fixed point in a `std::uint64_t` (nanoseconds per tick,
+scaled by 2^32), with the multiply widened to `unsigned __int128` where
+available.
+
+**Why.** Partly the project-wide no-floats rule in `core/` — a `double`
+multiply in the measurement path is one more thing that can differ between
+builds. Mostly, though, it is that fixed point makes the *precision* of the
+conversion explicit and auditable: Q32 resolves 2.3e-10 ns per tick, which
+is four orders of magnitude finer than the counter itself, so the conversion
+contributes nothing to the error budget and the whole error is the hardware's.
+With a `double` you would have to reason about it; here you can read it off.

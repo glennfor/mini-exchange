@@ -8,6 +8,8 @@ PointerAlignment: Left
 DerivePointerAlignment: false
 AllowShortFunctionsOnASingleLine: Inline
 AllowShortCaseLabelsOnASingleLine: true
+AllowShortIfStatementsOnASingleLine: WithoutElse
+AllowShortLoopsOnASingleLine: true
 AllowShortEnumsOnASingleLine: false
 AlwaysBreakTemplateDeclarations: Yes
 IncludeBlocks: Regroup

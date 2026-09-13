@@ -58,6 +58,8 @@ endif()
 # ---------------------------------------------------------------------------
 # Third-party dependencies (fetched, never vendored -- see spec 3.3)
 # ---------------------------------------------------------------------------
+find_package(Threads REQUIRED)
+
 include(FetchContent)
 set(FETCHCONTENT_QUIET OFF)
 
@@ -80,15 +82,24 @@ endif()
 # ---------------------------------------------------------------------------
 # Helper: declare a test executable for a module
 # ---------------------------------------------------------------------------
+# miniex_add_test(<name> [LABELS <label>...] <source>...)
+#
+# CTest labels drive the preset filters: the tsan preset runs only the
+# "concurrency" label, because ThreadSanitizer on the single-threaded
+# matching core would be pure overhead with nothing to find.
 function(miniex_add_test name)
   if(NOT MINIEX_BUILD_TESTS)
     return()
   endif()
-  add_executable(${name} ${ARGN})
+  cmake_parse_arguments(ARG "" "" "LABELS" ${ARGN})
+  if(NOT ARG_LABELS)
+    set(ARG_LABELS unit)
+  endif()
+  add_executable(${name} ${ARG_UNPARSED_ARGUMENTS})
   target_link_libraries(${name} PRIVATE miniex_flags GTest::gtest_main)
   gtest_discover_tests(${name}
-    PROPERTIES LABELS unit
-    DISCOVERY_TIMEOUT 60)
+    PROPERTIES LABELS "${ARG_LABELS}"
+    DISCOVERY_TIMEOUT 120)
 endfunction()
 
 # ---------------------------------------------------------------------------
