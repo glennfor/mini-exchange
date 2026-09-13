@@ -93,10 +93,18 @@ public:
 TEST(ZeroAllocation, TheCounterItselfWorks) {
   // If the replacement is not being called, the test below would pass
   // vacuously, which would be worse than failing.
+  //
+  // This has to call `::operator new` directly. A *new-expression* may be
+  // elided by the compiler ([expr.new]/10), and at -O2 clang does exactly
+  // that for a `new int(5)` whose `delete` it can see -- so the canary
+  // allocated nothing, counted nothing, and failed. The canary exists to
+  // catch a vacuous pass; writing it in a form the optimiser can delete was
+  // the same mistake one level down.
   AllocationScope scope;
-  auto* leak = new int(5);
+  volatile std::size_t bytes = 64;
+  void* block = ::operator new(bytes);
   EXPECT_GE(AllocationScope::count(), 1U);
-  delete leak;
+  ::operator delete(block);
 }
 
 TEST(ZeroAllocation, FastBookDoesNotAllocateInSteadyState) {

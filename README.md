@@ -319,10 +319,10 @@ ctest --preset release                     # 283 tests
 
 # the Python oracle and the viz server
 python3.11 -m venv .venv && .venv/bin/pip install -e '.[dev]'
-.venv/bin/python -m pytest                 # 90 tests
+.venv/bin/python -m pytest                 # 113 tests
 
 # the UI
-cd viz/ui && npm install && npm test       # 32 tests
+cd viz/ui && npm install && npm test       # 46 tests
 ```
 
 Verified from a fresh `git clone` on the development machine: **12 seconds to
@@ -466,6 +466,59 @@ the code. The list is the most honest thing in this README.
     clients. It was found by running `./scripts/demo.sh` and opening the
     dashboard, which is the one thing none of the automated tests do.
 
+21. **The heatmap's price axis jumped instead of scrolling.** It kept the mid
+    dead-centre: held still while the mid stayed in the middle half, then
+    re-centred in one step — up to a quarter of the window — and repainted
+    all 900 columns of history at the new mapping, so the whole chart leapt.
+    And the span was a fixed 120 ticks regardless of the book, while `rowFor`
+    returns −1 outside the window and the caller skips it, so a book wider
+    than 120 ticks lost its outer levels with no indication. Reported by
+    someone looking at the running dashboard: *"it is moving around a bit …
+    they are out of bounds it looks quite jumpy."*
+
+22. **The dashboard showed a book the engine could not have held** — bids at
+    100.2195 against asks at 100.1840, crossed by 355 ticks and stuck that
+    way for minutes. The server's book is a *delta* book: a level exists
+    because an Ack was seen and nothing has taken it away. Pausing the
+    transport stops the drain, the tap ring fills in seconds at 200k
+    events/s, the reader skips forward to stay live, and every order whose
+    cancellation fell in that hole rests for ever. Resume from a four-second
+    pause and it goes from 2,949 resting orders to 6,313 and crosses by 194
+    ticks, and it never recovers. A delta book cannot survive a gap; the
+    repair is to throw it away and rebuild, not to patch around it.
+
+23. **One backgrounded browser tab froze the dashboard for every tab.**
+    Broadcasts gather their sends, so a publish cycle costs the slowest
+    client — and "slowest" has no upper bound. A tab Chrome has backgrounded
+    stops draining its socket, TCP flow control backs the send up, and the
+    publish loop waits for ever: no book frames, no stats, a process at 50%
+    CPU publishing to nobody. There *was* a test for this. It used a client
+    that was slow, not one that had stopped, and it passed the whole time.
+
+24. **The drain starved the publisher, and the heatmap went blank.** A tap
+    record costs ~2.5 µs to unpack and apply in Python, so a 32768-record
+    batch costs 80 ms against a 33 ms publish interval. Once the reader was
+    behind enough to fill a batch every cycle it stayed there: five heatmap
+    columns in thirty seconds while the engine ran at full speed and every
+    component worked as designed. Bounding a loop by a count is not bounding
+    it by time.
+
+25. **Two demos silently shared one shared-memory segment.** `demo.sh` used a
+    fixed name, so a second run put a second producer on a single-producer
+    ring and the interleaved stream reconstructed into a nonsense market —
+    which cost real debugging time, aimed at the wrong layer. Its UI was also
+    talking to the *first* demo's server, because the default WebSocket port
+    is baked into the page and the script printed a URL without the override.
+
+26. **The test that exists to prevent a vacuous pass passed vacuously.** The
+    zero-allocation suite replaces the global `operator new` and counts calls;
+    its first test allocates deliberately to prove the replacement is wired
+    up. It used a *new-expression*, which `[expr.new]/10` lets the compiler
+    elide — and at `-O2` clang did, so the canary allocated nothing, counted
+    nothing, and failed. Calling `::operator new` directly is not elidable.
+    Writing the guard in a form the optimiser can delete is the same mistake
+    the guard exists to catch, one level down.
+
 ## What I would do next, in order
 
 1. **Run it on x86-64 Linux.** Everything needed is committed —
@@ -517,7 +570,7 @@ Deliberately **not** implemented, and explained in
 |---|---|
 | `docs/architecture.md` | module boundaries, threading model, wire formats |
 | `docs/matching-semantics.md` | the behavioural contract, and the oracle's source |
-| `docs/design-decisions.md` | 34 decisions: context, options, choice, measured consequence |
+| `docs/design-decisions.md` | 37 decisions: context, options, choice, measured consequence |
 | `docs/benchmarking.md` | the methodology, and what the harness refuses to do |
 | `docs/validation.md` | what has and has not been validated |
 | `docs/divergence.md` | why ITCH replay is not what it sounds like |

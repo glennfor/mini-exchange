@@ -804,12 +804,30 @@ the price window moves.
 the panel that is supposed to be the striking one would be the one that
 stutters.
 
-**The supporting decision is the window hysteresis.** The visible price range
-only moves when the touch leaves the middle half of it. Recomputing it from
-the current book every frame would make the whole heatmap slide vertically
-whenever one deep order arrives, and a chart whose axis moves is unreadable —
-and it would also force a full 900-column redraw on every frame, which is the
-thing this design exists to avoid. The two are the same decision.
+**The supporting decision is how the price window moves.** The first version
+kept the mid dead-centre: it held still while the mid stayed in the middle
+half of the window and then re-centred completely — a step of up to a quarter
+of the window in a single frame, and, because the y axis is price, a step that
+took all 900 repainted columns of history with it. It was reported from the
+running dashboard as the chart being "quite jumpy", which is exactly what it
+was.
+
+The window now moves by the *least* amount that brings the data back inside a
+margin, so a drifting market moves it a tick at a time; and the painted
+history moves with it in the same `drawImage` that scrolls it left, by the
+rows the window moved. That blit has to be a whole number of rows, so the
+**window** is rounded to the nearest row rather than the blit — rounding the
+blit would leave history painted at the wrong price, with an error that
+accumulates over thousands of moves.
+
+**And the span is chosen, not fixed.** It was a constant 120 ticks. `rowFor`
+returns −1 outside the window and the caller skips the level, so a book wider
+than that lost its outer levels silently — a partial book drawn as a whole
+one, which is the failure mode this project exists to avoid. The span is now
+the smallest rung of a doubling ladder that contains every level the server
+sent, growing at once and shrinking only past a deadband. Only a change of
+*span* costs a full redraw now, because only a change of span changes the
+price-to-row mapping; a change of position does not.
 
 ---
 
@@ -884,3 +902,91 @@ recorded here as *suggestive*, and `scripts/machine_report.sh` now captures
 the load average and the top CPU consumers so that a future reader can see
 immediately whether a result set was taken on a quiet machine. This one was
 not.
+
+## DD-035 — The server's book is discarded on a gap, not repaired
+
+**Context.** The viz server reconstructs depth by applying tap events: a level
+exists because an Ack was seen and no Cancelled or Fill has taken it away.
+The tap is lossy by design (DD-029 and the engine's drop-rather-than-stall
+rule), so the event stream this reconstruction is built from has holes in it.
+
+**Choice.** On any gap — the engine's drop counter moving, or this reader
+skipping forward — the book is cleared and rebuilt from the events that
+follow. A crossed book, which the engine cannot produce, is treated as proof
+of a gap that was not otherwise detected and triggers the same rebuild. The
+rebuild count is on the wire and in the panel.
+
+**Why.** A delta book cannot survive a gap. Lose one Cancelled and that level
+rests for ever: nothing that follows can remove it, because the only thing
+that could was the event that was lost. Observed live, the dashboard held
+bids at 100.2195 against asks at 100.1840 — crossed by 355 ticks — for
+minutes. Reproduced exactly: pause the transport for four seconds at 200k
+events/s and the reconstruction goes from 2,949 resting orders to 6,313 and
+crosses by 194 ticks, permanently.
+
+**The alternative was to patch around it**, reconciling phantom levels against
+later observations. That is how market-data bugs become permanent: the
+reconciliation has no ground truth to work from, so it encodes guesses that
+are wrong in exactly the cases that matter. Depth that is thin for a moment
+and then correct is worth more than depth that looks complete and is wrong.
+
+**The cost** is that a gap loses the resting orders placed before it, not just
+the events in it. At 165k events/s the book is visibly rebuilt within a
+second, which is the right trade for a live view; a view that had to be
+historically exact would need the tap to carry periodic snapshots.
+
+---
+
+## DD-036 — The publisher never waits for a consumer
+
+**Context.** One server fans frames out to every connected dashboard.
+
+**Choice.** Every send has a deadline of half a second. A client that misses
+it is closed and dropped. The drain that feeds the publisher is bounded by
+the clock as well as by a record count, so one cycle cannot eat several
+publish intervals.
+
+**Why.** This is the same rule the tap applies to the engine, one layer out:
+the producer must not be held hostage by the consumer. Both halves of it were
+learned the hard way.
+
+Gathering the sends means a publish cycle costs the *slowest* client — and
+"slowest" has no upper bound. A tab Chrome has backgrounded stops draining its
+socket entirely, TCP flow control backs the send up, and the publish loop
+waits on it for ever: every other tab stops, the once-a-second stats stop, and
+the process sits at 50% CPU draining the tap and publishing to nobody. There
+was a test for this. It used a client that was *slow* rather than one that had
+*stopped*, and it passed throughout.
+
+And a count-bounded drain is not time-bounded. A tap record costs about 2.5 µs
+to unpack and apply in Python, so a full 32768-record batch costs 80 ms
+against a 33 ms interval; once the reader was behind enough to fill a batch
+every cycle it stayed there, and the heatmap — one column per published frame
+— showed five columns in thirty seconds. Because the drain rate that fits in
+the clock budget (~240k records/s) exceeds what the engine produces, bounding
+it makes the reader *catch up* rather than settle into the overrun.
+
+---
+
+## DD-037 — A half-applied command is held back, not drawn
+
+**Context.** The engine emits an order's Ack before it matches it. Between
+that Ack and the trades that follow, the server's reconstruction has the
+aggressor resting at a price that crosses the other side.
+
+**Choice.** A crossed reconstruction is never published. The frame is held for
+a cycle, which is all the next drain needs to finish the command; a crossing
+that does not clear within thirty cycles is treated as lost events and
+triggers the rebuild of DD-035. The snapshot sent to a client on connect goes
+through the same check, since it is the one frame the publish loop does not
+produce.
+
+**Why.** It is a real state of the *event stream* and not a state the engine's
+book was ever in — matching happens on arrival, so an order that crossed has
+already traded. Drawing it shows a market that never existed. Measured against
+the live engine, about one published frame in twenty-five landed inside that
+window once the drain became deadline-bounded and could stop part way through
+a batch.
+
+**The cost** is at most one publish interval of latency on those frames, which
+is invisible, against a class of impossible state that is not.
