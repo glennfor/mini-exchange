@@ -114,8 +114,17 @@ export function useSocket(url: string): SocketData {
           setHello(frame);
           break;
         case 'book':
+          // Only count it as a new tick if the book actually moved.
+          //
+          // The heatmap treats each revision as one time column, so a server
+          // that re-sent an identical snapshot would draw a wall of identical
+          // columns -- which is exactly what a paused transport looked like
+          // before the server stopped doing that. Belt and braces: the client
+          // should not depend on the server never repeating itself.
+          if (book.current === null || book.current.seq !== frame.seq) {
+            revision.current += 1;
+          }
           book.current = frame;
-          revision.current += 1;
           break;
         case 'trades':
           // Newest first, capped. An unbounded tape is a memory leak with a

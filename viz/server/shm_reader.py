@@ -241,6 +241,27 @@ class ShmTapReader:
         self._set_u64(TAIL_OFFSET, tail + available)
         return out
 
+    def seek_to_live(self) -> int:
+        """Starts reading at the producer's current head, discarding backlog.
+
+        Returns how many records were passed over.
+
+        A dashboard attaching to an engine that has been running for a while
+        finds a ring already full of history. Replaying it would show a market
+        that is minutes stale and then race to catch up; and because the
+        catch-up exceeds the lag ceiling, it would also be reported as a skip
+        -- so the panel showed a permanent "the viewer is behind" warning for
+        something that happened once, at startup, by design.
+
+        Declining to replay history the dashboard was not present for is the
+        right default for a *live* view. The number is reported once, at
+        attach, rather than folded into the running loss counters.
+        """
+        head = self.head
+        skipped = head - self.tail
+        self._set_u64(TAIL_OFFSET, head)
+        return skipped
+
     def skip_to_recent(self, keep: int) -> int:
         """Jumps the tail forward, keeping only the newest `keep` records.
 

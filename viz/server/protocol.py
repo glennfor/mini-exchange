@@ -101,12 +101,24 @@ def stats(
     ring_drops: int,
     schedule_misses: int,
     reader_lag: int = 0,
+    reader_skipped: int = 0,
 ) -> dict[str, Any]:
     """Engine statistics, once per second.
 
-    `ring_drops` and `schedule_misses` are in here, and the UI shows them in
-    red when non-zero, because a silently-dropping dashboard that looks fine
-    is worse than no dashboard at all.
+    The loss counters are in here, and the UI shows them when non-zero,
+    because a silently-lossy dashboard that looks fine is worse than no
+    dashboard at all. **They are three different things and the protocol
+    keeps them apart**, because merging them makes the dashboard accuse the
+    engine of losing data when it was the viewer that fell behind:
+
+    * `ring_drops` -- the engine's tap ring was full and the **engine threw
+      events away**. Real data loss, at the source.
+    * `reader_skipped` -- this server could not keep up and deliberately
+      jumped its cursor forward to stay current. The book on screen is the
+      live one; the events in between were never applied to it. The engine
+      was unaffected.
+    * `schedule_misses` -- the benchmark harness could not keep to its own
+      arrival schedule, so its latency numbers describe the harness.
     """
     return {
         "v": SCHEMA_VERSION,
@@ -120,6 +132,7 @@ def stats(
         "ring_drops": ring_drops,
         "schedule_misses": schedule_misses,
         "reader_lag": reader_lag,
+        "reader_skipped": reader_skipped,
     }
 
 

@@ -120,6 +120,7 @@ class TapPublisher:
         self.max_lag = max_lag
         self.skipped = 0
         self.book = BookState()
+        self._last_published_seq: int | None = None
         self.transport = protocol.TransportState()
         self._last_stats = 0.0
         self._events_at_last_stats = 0
@@ -159,6 +160,16 @@ class TapPublisher:
         if self.transport.pending_steps > 0:
             self.transport.pending_steps -= len(records)
 
+    def book_frame(self) -> dict[str, Any]:
+        """The current depth snapshot. Sent to a client the moment it
+        connects, so a client that joins while the transport is paused sees
+        the book rather than an empty screen."""
+        bids, asks = self.book.depth(self.levels)
+        return protocol.book(
+            self.book.t_ns, self.symbol, self.book.seq, bids, asks,
+            self.book.last_trade,
+        )
+
     async def _publish(self) -> None:
         if self.hub.count == 0:
             # Nothing connected: keep draining (so the engine does not fill
@@ -166,16 +177,21 @@ class TapPublisher:
             self.book.take_trades()
             return
 
-        bids, asks = self.book.depth(self.levels)
-        await self.hub.broadcast(
-            protocol.book(
-                self.book.t_ns, self.symbol, self.book.seq, bids, asks,
-                self.book.last_trade,
-            )
-        )
-        trades = self.book.take_trades()
-        if trades:
-            await self.hub.broadcast(protocol.trades(trades))
+        # Only publish a book frame when the book actually moved.
+        #
+        # Publishing an unchanged snapshot every cycle is not harmless: the
+        # heatmap treats each book frame as one time column, so a paused
+        # transport produced a wall of identical columns scrolling to the
+        # right -- straight horizontal lines, as if the market had frozen at
+        # a price rather than stopped. Pausing must stop the chart, not feed
+        # it copies.
+        if self.book.seq != self._last_published_seq:
+            self._last_published_seq = self.book.seq
+            await self.hub.broadcast(self.book_frame())
+
+            trades = self.book.take_trades()
+            if trades:
+                await self.hub.broadcast(protocol.trades(trades))
 
         now = time.monotonic()
         if now - self._last_stats >= 1.0:
@@ -197,9 +213,14 @@ class TapPublisher:
             p999_ns=snapshot.p999_ns if snapshot else 0,
             max_ns=snapshot.max_ns if snapshot else 0,
             orders_resting=self.book.orders_resting,
-            ring_drops=self.reader.dropped + self.skipped,
+            # Kept apart deliberately: ring_drops is the engine throwing
+            # events away, reader_skipped is this server jumping forward to
+            # stay current. Adding them together made the dashboard report
+            # engine data loss that had not happened.
+            ring_drops=self.reader.dropped,
             schedule_misses=snapshot.schedule_misses if snapshot else 0,
             reader_lag=self.reader.lag,
+            reader_skipped=self.skipped,
         )
 
 
@@ -222,6 +243,10 @@ class MockPublisher:
         self.transport = protocol.TransportState(
             total_events=sum(1 for f in self.frames if f.get("type") == "book")
         )
+        self._last_book: dict[str, Any] | None = None
+
+    def book_frame(self) -> dict[str, Any] | None:
+        return self._last_book
 
     async def run(self) -> None:
         interval = 1.0 / self.publish_hz
@@ -236,6 +261,7 @@ class MockPublisher:
             frame = dict(self.frames[index])
             if frame.get("type") == "book":
                 self.transport.event_index = int(frame.get("seq", 0))
+                self._last_book = frame
             await self.hub.broadcast(frame)
             index += 1
             if index >= len(self.frames):
@@ -277,11 +303,18 @@ async def serve(args: argparse.Namespace) -> int:
         )
         dataset = f"shm:{args.shm}"
         tap_on = True
+        backlog = 0 if args.replay_backlog else reader.seek_to_live()
         print(
             f"# attached to {args.shm}: capacity {reader.capacity} records, "
             f"producer {'live' if reader.producer_live else 'NOT running'}",
             file=sys.stderr,
         )
+        if backlog:
+            print(
+                f"# started live, passing over {backlog} records already in "
+                f"the ring (--replay-backlog to play them instead)",
+                file=sys.stderr,
+            )
 
     async def handler(ws: Any) -> None:
         hub.add(ws)
@@ -292,6 +325,11 @@ async def serve(args: argparse.Namespace) -> int:
             )
         )
         await ws.send(json.dumps(publisher.transport.frame()))
+        # The current book, so a client that connects while paused sees the
+        # market rather than "waiting for a book frame" forever.
+        current = publisher.book_frame()
+        if current is not None:
+            await ws.send(json.dumps(current))
         try:
             async for message in ws:
                 try:
@@ -331,6 +369,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-lag", type=int, default=200000,
                         help="skip forward past this much backlog rather than "
                              "showing a lagging replay")
+    parser.add_argument("--replay-backlog", action="store_true",
+                        help="play the records already in the ring at attach "
+                             "time instead of starting from the live head")
     parser.add_argument("--build-sha", default="unknown")
     args = parser.parse_args(argv)
 

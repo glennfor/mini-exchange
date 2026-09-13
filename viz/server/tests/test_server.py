@@ -195,3 +195,49 @@ async def test_one_stalled_client_does_not_delay_the_others():
         "two clients, one of them 50 ms slow: concurrent sends cost ~50 ms, "
         f"serial sends cost ~100 ms; measured {elapsed*1000:.0f} ms"
     )
+
+
+@pytest.mark.asyncio
+async def test_a_paused_transport_stops_the_chart_rather_than_repeating_itself():
+    """Pausing must stop the heatmap, not feed it copies of one column.
+
+    The publisher used to broadcast a book frame every cycle regardless. The
+    heatmap treats each book frame as one time column, so a paused transport
+    drew a wall of identical columns scrolling right -- straight horizontal
+    lines, looking like a market frozen at a price rather than a stopped
+    replay.
+    """
+    hub = Hub()
+    client = FakeSocket()
+    hub.add(client)
+    publisher = MockPublisher(str(SAMPLE), hub, publish_hz=1000)
+
+    task = asyncio.create_task(publisher.run())
+    await asyncio.sleep(0.15)
+    publisher.transport.apply({"action": "pause"})
+    books_at_pause = sum(1 for f in client.sent if f["type"] == "book")
+    assert books_at_pause > 0, "it should have been publishing before the pause"
+
+    await asyncio.sleep(0.2)
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+    books_after = sum(1 for f in client.sent if f["type"] == "book")
+    assert books_after == books_at_pause, (
+        f"{books_after - books_at_pause} book frames arrived while paused; a "
+        "paused transport must publish no new time columns at all"
+    )
+
+
+def test_a_publisher_exposes_its_current_book_for_a_client_joining_paused():
+    """Otherwise a client that connects while paused sees an empty screen
+    forever, because the only frames that carry the book are the ones the
+    pause is suppressing."""
+    hub = Hub()
+    publisher = MockPublisher(str(SAMPLE), hub, publish_hz=1000)
+    assert publisher.book_frame() is None, "nothing published yet"
+
+    # After a frame has gone out, the publisher can hand it to a latecomer.
+    publisher._last_book = {"v": 1, "type": "book", "seq": 7}
+    assert publisher.book_frame()["seq"] == 7

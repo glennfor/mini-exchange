@@ -428,7 +428,36 @@ the code. The list is the most honest thing in this README.
     the symptom was "not a miniex tap segment" against a segment that plainly
     was one. It is now derived from the bytes of `"MINIEXTP"`.
 
-16. **The viz server died the moment a second browser tab connected.**
+16. **Pausing the transport did not stop the chart.** The publisher kept
+    broadcasting a book frame every cycle regardless, and the heatmap treats
+    each book frame as one time column — so a paused replay drew a wall of
+    identical columns scrolling right, looking like a market frozen at a
+    price rather than a stopped replay. The server now publishes only when
+    the book's sequence number actually moves, and the client ignores a
+    repeated snapshot as well, because it should not depend on the server
+    never repeating itself.
+
+17. **The dashboard blamed the engine for the viewer's lag.** Engine drops
+    and server skips were added into one `ring_drops` counter, so a demo in
+    which the engine had lost *nothing* showed a red "this view is missing
+    data" banner. They are now three separate counters with three different
+    messages: the engine discarding events, this server jumping forward, and
+    the harness missing its schedule. A warning that points at the wrong
+    component is worse than no warning — it sends you to debug the wrong
+    thing.
+
+18. **And the banner was permanently lit anyway**, because the server
+    replayed whatever was already in the tap ring when it attached, then
+    counted the catch-up as a skip. A live dashboard should start at *now*;
+    it now passes over the backlog and reports the count once, at attach.
+
+19. **The stats frame validator checked two fields out of ten.** Adding
+    `reader_skipped` to the protocol sailed straight through it and crashed a
+    render on `undefined.toString()`. A validator that checks a subset gives
+    the impression of a schema guarantee while providing none, which is worse
+    than no validator — the render code then trusts it.
+
+20. **The viz server died the moment a second browser tab connected.**
     `Hub.broadcast` iterated the live client set while `await ws.send(...)`
     was suspended, and the connection handler added the new client during
     exactly that window — `RuntimeError: Set changed size during iteration`,

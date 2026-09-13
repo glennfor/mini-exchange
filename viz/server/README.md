@@ -14,6 +14,24 @@ The browser never sees an event it cannot draw.
 The server does the aggregation, not the engine. Putting it in the engine
 would mean the matching core doing arithmetic on behalf of a dashboard.
 
+## Attaching to a running engine
+
+The server starts at the producer's **current head** and passes over whatever
+is already in the ring, reporting the count once:
+
+```
+# started live, passing over 817194 records already in the ring
+```
+
+A ring that has been filling for a few minutes holds a market that is minutes
+stale. Replaying it would show that stale market and then race to catch up —
+and because the catch-up exceeds the lag ceiling below, it would *also* be
+counted as a skip, so the dashboard showed a permanent "the viewer is behind"
+warning for something that happened once, at startup, by design. A warning
+that is always lit is not a warning.
+
+`--replay-backlog` plays the history instead, for when that is what you want.
+
 ## Falling behind
 
 Python cannot drain a C++ matching engine running at a million commands a
@@ -27,10 +45,25 @@ current. The skip count is published in the `stats` frame and the UI shows it
 in red, because a dashboard that quietly shows a partial market is worse than
 one that admits it is missing data.
 
-Measured on the development machine at 800k commands/s offered: the reader
-sustains roughly 250k events/s, skips the rest, and holds its lag at ~140k
-records instead of growing without limit. **The engine is unaffected either
-way** — it drops into a full ring and carries on.
+Measured on the development machine: the reader sustains **0.85 M records/s**,
+which is comfortably ahead of what the demo produces — at 160k commands/s the
+dashboard runs with zero skips and zero lag. Past roughly a million events a
+second it starts skipping, holds its lag bounded instead of growing without
+limit, and says so. **The engine is unaffected either way** — it drops into a
+full ring and carries on.
+
+## Three kinds of loss, kept apart
+
+| Counter | Who lost data | What it means |
+|---|---|---|
+| `ring_drops` | **the engine** | its tap ring was full and it discarded events |
+| `reader_skipped` | **this server** | it jumped forward to stay current; the book is live, the events between were never applied |
+| `schedule_misses` | **the benchmark harness** | it could not keep its own arrival schedule, so its percentiles describe itself |
+
+These were briefly one number, and the dashboard then reported engine data
+loss during a demo in which the engine had lost nothing. A warning that blames
+the wrong component is worse than no warning: it sends you to debug the wrong
+thing.
 
 ## Running it
 

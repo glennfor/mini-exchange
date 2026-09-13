@@ -176,16 +176,41 @@ describe('the dashboard', () => {
         ring_drops: 17,
         schedule_misses: 3,
         reader_lag: 0,
+        reader_skipped: 0,
       });
     });
 
     expect(screen.getByText('6.12M')).toBeTruthy();
     expect(screen.getByText('342 ns')).toBeTruthy();
-    // Drops are shown, and shown as a word as well as a colour.
-    expect(screen.getByText('DROPPING')).toBeTruthy();
+    // Loss is shown as a word as well as a colour.
+    expect(screen.getByText('DATA LOST')).toBeTruthy();
     expect(screen.getByText('SATURATED')).toBeTruthy();
-    expect(screen.getByText(/missing data/i)).toBeTruthy();
+    expect(screen.getByText(/discarded events/i)).toBeTruthy();
   });
+
+  it('blames the viewer, not the engine, when it is the viewer that is behind',
+    async () => {
+      // These were briefly one counter, and the panel then reported engine
+      // data loss during a demo in which the engine had lost nothing. A
+      // warning that points at the wrong component is worse than none.
+      render(<App />);
+      await settle();
+      const ws = FakeWebSocket.live[0]!;
+      await act(async () => {
+        ws.open();
+        ws.deliver({
+          v: 1, type: 'stats', ops_per_sec: 1_000_000, p50_ns: 100,
+          p99_ns: 200, p999_ns: 300, max_ns: 400, orders_resting: 10,
+          ring_drops: 0, schedule_misses: 0, reader_lag: 140_000,
+          reader_skipped: 7_300_000,
+        });
+      });
+
+      expect(screen.getByText('BEHIND')).toBeTruthy();
+      expect(screen.getByText(/jumped forward to stay current/i)).toBeTruthy();
+      expect(screen.queryByText('DATA LOST')).toBeNull();
+      expect(screen.queryByText(/discarded events/i)).toBeNull();
+    });
 
   it('renders the tape newest-first with the aggressor side as a letter', async () => {
     render(<App />);
@@ -257,7 +282,7 @@ describe('the dashboard', () => {
       ws.deliver({
         v: 1, type: 'stats', ops_per_sec: 1, p50_ns: 1, p99_ns: 2,
         p999_ns: 3, max_ns: 4, orders_resting: 0, ring_drops: 0,
-        schedule_misses: 0, reader_lag: 0,
+        schedule_misses: 0, reader_lag: 0, reader_skipped: 0,
       });
     });
     expect(screen.getByText('bad frames')).toBeTruthy();

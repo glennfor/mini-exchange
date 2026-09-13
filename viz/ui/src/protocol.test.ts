@@ -147,3 +147,43 @@ describe('formatting', () => {
     expect(formatNanos(1_500_000)).toBe('1.50 ms');
   });
 });
+
+describe('the stats validator', () => {
+  const complete = {
+    v: SCHEMA_VERSION,
+    type: 'stats',
+    ops_per_sec: 1,
+    p50_ns: 2,
+    p99_ns: 3,
+    p999_ns: 4,
+    max_ns: 5,
+    orders_resting: 6,
+    ring_drops: 7,
+    schedule_misses: 8,
+    reader_lag: 9,
+    reader_skipped: 10,
+  };
+
+  it('accepts a complete frame', () => {
+    expect(parseFrame(complete)).not.toBeNull();
+  });
+
+  it('rejects a frame missing ANY field, not just the two it used to check', () => {
+    // It checked ops_per_sec and p99_ns only. A frame missing
+    // reader_skipped passed validation and then crashed a render on
+    // undefined.toString(). A validator that checks a subset gives the
+    // impression of a guarantee while providing none.
+    for (const field of Object.keys(complete)) {
+      if (field === 'v' || field === 'type') continue;
+      const partial: Record<string, unknown> = { ...complete };
+      delete partial[field];
+      expect(parseFrame(partial)).toBeNull();
+    }
+  });
+
+  it('rejects non-numeric values', () => {
+    expect(parseFrame({ ...complete, ring_drops: 'lots' })).toBeNull();
+    expect(parseFrame({ ...complete, p99_ns: null })).toBeNull();
+    expect(parseFrame({ ...complete, max_ns: Number.NaN })).toBeNull();
+  });
+});

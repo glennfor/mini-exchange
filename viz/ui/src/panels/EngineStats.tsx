@@ -2,10 +2,16 @@
  * The numbers panel.
  *
  * Big numerals for the two that matter at a glance -- ops/sec and p99 -- and
- * drops and schedule misses **in red when non-zero**, because a
- * silently-dropping dashboard that looks fine is worse than no dashboard.
+ * the loss counters below them, because a silently-lossy dashboard that looks
+ * fine is worse than no dashboard.
  *
- * Non-zero drops also get a word, not just a colour: the panel has to be
+ * The three kinds of loss are shown **separately and described differently**.
+ * They were briefly merged into one "drops" number, which made the panel
+ * report engine data loss during a demo where the engine had lost nothing --
+ * the viewer was simply behind. A warning that blames the wrong component is
+ * worse than no warning, because it sends you to debug the wrong thing.
+ *
+ * Every non-zero counter gets a word as well as a colour: the panel has to be
  * readable without colour vision.
  */
 
@@ -25,8 +31,14 @@ export function EngineStats({ stats, rejectedFrames }: Props) {
     );
   }
 
-  const problems =
-    stats.ring_drops > 0 || stats.schedule_misses > 0 || rejectedFrames > 0;
+  // Three different failures, and the panel must not blur them: the engine
+  // discarding events is data loss at the source; the server skipping ahead
+  // means the view is live but not continuous; a rejected frame means the
+  // schema has drifted. They have different causes and different fixes.
+  const engineDropping = stats.ring_drops > 0;
+  const viewSkipping = stats.reader_skipped > 0;
+  const schemaDrift = rejectedFrames > 0;
+  const saturated = stats.schedule_misses > 0;
 
   return (
     <div className="flex h-full flex-col gap-2 overflow-hidden p-2">
@@ -41,33 +53,54 @@ export function EngineStats({ stats, rejectedFrames }: Props) {
         <Row label="max" value={formatNanos(stats.max_ns)} />
         <Row label="orders resting" value={formatCount(stats.orders_resting)} />
         <Row
-          label="tap drops"
+          label="engine drops"
           value={formatCount(stats.ring_drops)}
-          bad={stats.ring_drops > 0}
-          suffix={stats.ring_drops > 0 ? 'DROPPING' : undefined}
+          tone={engineDropping ? 'bad' : undefined}
+          suffix={engineDropping ? 'DATA LOST' : undefined}
         />
         <Row
-          label="schedule misses"
-          value={formatCount(stats.schedule_misses)}
-          bad={stats.schedule_misses > 0}
-          suffix={stats.schedule_misses > 0 ? 'SATURATED' : undefined}
+          label="view skipped"
+          value={formatCount(stats.reader_skipped)}
+          tone={viewSkipping ? 'warn' : undefined}
+          suffix={viewSkipping ? 'BEHIND' : undefined}
         />
         <Row label="reader lag" value={formatCount(stats.reader_lag)} />
         <Row
+          label="schedule misses"
+          value={formatCount(stats.schedule_misses)}
+          tone={saturated ? 'warn' : undefined}
+          suffix={saturated ? 'SATURATED' : undefined}
+        />
+        <Row
           label="bad frames"
           value={formatCount(rejectedFrames)}
-          bad={rejectedFrames > 0}
-          suffix={rejectedFrames > 0 ? 'SCHEMA' : undefined}
+          tone={schemaDrift ? 'bad' : undefined}
+          suffix={schemaDrift ? 'SCHEMA' : undefined}
         />
       </dl>
 
-      {problems && (
-        <p className="mt-auto text-[10px] leading-tight text-ask">
-          This view is missing data. Drops and schedule misses are shown rather
-          than hidden: a dashboard that quietly shows a partial market is worse
-          than one that admits it.
-        </p>
-      )}
+      <div className="mt-auto space-y-1 text-[10px] leading-tight">
+        {engineDropping && (
+          <p className="text-ask">
+            The engine&rsquo;s tap ring filled and it discarded events. That is
+            by design &mdash; stalling matching to feed a dashboard would be
+            backwards &mdash; but this view has gaps the engine itself created.
+          </p>
+        )}
+        {viewSkipping && !engineDropping && (
+          <p className="text-accent">
+            This viewer cannot drain the tap fast enough, so it jumped forward
+            to stay current. The book above is live; the events in between were
+            skipped. The engine was not affected.
+          </p>
+        )}
+        {schemaDrift && (
+          <p className="text-ask">
+            Frames arrived that this build could not parse. The server and the
+            UI disagree about the wire schema.
+          </p>
+        )}
+      </div>
     </div>
   );
 }
@@ -86,18 +119,21 @@ function Big({ label, value }: { label: string; value: string }) {
 function Row({
   label,
   value,
-  bad,
+  tone,
   suffix,
 }: {
   label: string;
   value: string;
-  bad?: boolean;
+  /** `bad` is data actually lost; `warn` is the view being behind. */
+  tone?: 'bad' | 'warn';
   suffix?: string;
 }) {
+  const colour =
+    tone === 'bad' ? 'text-ask' : tone === 'warn' ? 'text-accent' : 'text-gray-200';
   return (
     <>
       <dt className="text-muted">{label}</dt>
-      <dd className={`numeral text-right ${bad ? 'text-ask' : 'text-gray-200'}`}>
+      <dd className={`numeral text-right ${colour}`}>
         {value}
         {suffix ? <span className="ml-1 text-[9px]">{suffix}</span> : null}
       </dd>

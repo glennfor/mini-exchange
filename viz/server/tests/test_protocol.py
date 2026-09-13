@@ -105,3 +105,30 @@ def test_transport_frame_reflects_state():
     assert frame["speed"] == 10
     assert frame["event_index"] == 7
     assert frame["total_events"] == 99
+
+
+def test_loss_counters_are_three_separate_fields():
+    """Merging them made the dashboard blame the engine for the viewer's lag.
+
+    `ring_drops` is the engine discarding events; `reader_skipped` is this
+    server jumping forward to stay current; `schedule_misses` is the harness
+    failing to keep its own schedule. Different causes, different fixes,
+    different components at fault.
+    """
+    frame = roundtrip(
+        protocol.stats(
+            ops_per_sec=1_000_000,
+            p50_ns=100,
+            p99_ns=200,
+            p999_ns=300,
+            max_ns=400,
+            orders_resting=10,
+            ring_drops=0,
+            schedule_misses=0,
+            reader_lag=140_000,
+            reader_skipped=7_300_000,
+        )
+    )
+    assert frame["ring_drops"] == 0, "the engine lost nothing"
+    assert frame["reader_skipped"] == 7_300_000, "the viewer skipped"
+    assert frame["schedule_misses"] == 0

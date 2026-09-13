@@ -177,3 +177,27 @@ def test_a_full_ring_reports_drops_rather_than_losing_them_silently():
     finally:
         with contextlib.suppress(OSError):
             os.unlink(f"/dev/shm{name}")
+
+
+def test_attaching_live_passes_over_the_backlog_without_calling_it_loss(
+    tap_segment,
+):
+    """A dashboard joining a running engine starts at 'now'.
+
+    The ring holds history the dashboard was not present for. Replaying it
+    shows a stale market and then races to catch up -- and because the
+    catch-up exceeds the lag ceiling, it also gets counted as a skip, so the
+    panel showed a permanent "the viewer is behind" warning for something
+    that happened once, at startup, by design.
+    """
+    with ShmTapReader(tap_segment) as reader:
+        waiting = reader.head - reader.tail
+        assert waiting > 1000, "the fixture should leave a real backlog"
+
+        skipped = reader.seek_to_live()
+        assert skipped == waiting
+        assert reader.lag == 0
+        assert reader.read(100) == [], "nothing left until the producer writes"
+
+        # And it is not folded into the drop counter, which is the engine's.
+        assert reader.dropped == 0

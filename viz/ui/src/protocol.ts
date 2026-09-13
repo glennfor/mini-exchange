@@ -58,9 +58,21 @@ export interface StatsFrame {
   p999_ns: number;
   max_ns: number;
   orders_resting: number;
+  /** The engine's tap ring was full and the **engine** discarded events. */
   ring_drops: number;
+  /** The benchmark harness could not keep to its own arrival schedule. */
   schedule_misses: number;
+  /** How far behind the tap the server currently is, in records. */
   reader_lag: number;
+  /**
+   * The **server** jumped its cursor forward to stay current. The book on
+   * screen is live; the events in between were never applied to it.
+   *
+   * Kept separate from `ring_drops` on purpose. Merging them made the panel
+   * accuse the engine of losing data when it was the viewer that fell
+   * behind, which is a different problem with a different fix.
+   */
+  reader_skipped: number;
 }
 
 export interface TransportFrame {
@@ -87,6 +99,19 @@ export type Frame =
   | ErrorFrame;
 
 /** Commands the client sends back. Mirrors `VALID_TRANSPORT_COMMANDS`. */
+const STATS_FIELDS = [
+  'ops_per_sec',
+  'p50_ns',
+  'p99_ns',
+  'p999_ns',
+  'max_ns',
+  'orders_resting',
+  'ring_drops',
+  'schedule_misses',
+  'reader_lag',
+  'reader_skipped',
+] as const satisfies readonly (keyof StatsFrame)[];
+
 export type TransportCommand =
   | { action: 'play' }
   | { action: 'pause' }
@@ -126,7 +151,14 @@ export function parseFrame(raw: unknown): Frame | null {
         ? (f as unknown as TradesFrame)
         : null;
     case 'stats':
-      return isNumber(f.ops_per_sec) && isNumber(f.p99_ns)
+      // Every field, not a sample of them.
+      //
+      // This checked only two, and a stats frame missing `reader_skipped`
+      // sailed through the validator and crashed a render three layers down
+      // on `undefined.toString()`. A validator that checks a subset gives the
+      // *impression* of a schema guarantee while providing none, which is
+      // worse than no validator, because the render code then trusts it.
+      return STATS_FIELDS.every((field) => isNumber(f[field]))
         ? (f as unknown as StatsFrame)
         : null;
     case 'transport':
