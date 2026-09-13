@@ -756,3 +756,75 @@ The magic constant is a case in point: it was first written as a hex literal
 in Python with one nibble wrong, and the symptom was "not a miniex tap
 segment" against a segment that plainly was one. It is now derived from the
 bytes of `"MINIEXTP"`, which cannot be mistyped.
+
+---
+
+## DD-031 — Canvas for every panel that redraws, DOM for everything else
+
+**Context.** The dashboard publishes at 30 Hz. React can do 30 Hz.
+
+**Choice.** The depth ladder, the heatmap and the latency CDF are canvases.
+The stats panel, the tape and the transport controls are DOM.
+
+**Why the split is where it is.** The dividing line is not "is it a chart" but
+**how much changes per frame**. The ladder's forty rows all change every
+frame: reconciling forty rows of text and forty bar widths at 30 Hz is
+measurable, and the flicker is visible. The stats panel changes eight numbers
+once a second, and DOM is the right tool for eight numbers with labels and
+semantics.
+
+The tape is DOM despite being the busiest panel, because it is a *list* and
+lists want virtualisation, selection and scrolling — all of which the browser
+already does well and none of which a canvas gives for free.
+
+**Consequence.** The canvases need their own tests, because there is no DOM to
+assert against. `src/test-setup.ts` stubs `getContext` with a *recording*
+context, so a test can assert that a panel actually issued draw calls rather
+than merely mounting.
+
+---
+
+## DD-032 — The heatmap scrolls an offscreen canvas; it does not redraw history
+
+**Context.** 900 columns of 30-second history at up to 5000 price rows.
+
+**Choice.** Each publish tick draws **one** new column into an offscreen
+canvas, `drawImage`s that canvas onto itself shifted left by one column, and
+the visible canvas is a single blit. The whole buffer is only re-rendered when
+the price window moves.
+
+**Why.** Redrawing everything would be 900 × 600 cells per frame at 30 Hz —
+16 million cells a frame, 486 million a second. No browser will do that, and
+the panel that is supposed to be the striking one would be the one that
+stutters.
+
+**The supporting decision is the window hysteresis.** The visible price range
+only moves when the touch leaves the middle half of it. Recomputing it from
+the current book every frame would make the whole heatmap slide vertically
+whenever one deep order arrives, and a chart whose axis moves is unreadable —
+and it would also force a full 900-column redraw on every frame, which is the
+thing this design exists to avoid. The two are the same decision.
+
+---
+
+## DD-033 — The UI is verified by jsdom, not by screenshots
+
+**Context.** The spec asks for a committed screenshot and a demo GIF.
+
+**Choice.** The dashboard is tested by mounting it in jsdom against a stubbed
+WebSocket and feeding it the committed sample recording — the same file, byte
+for byte, that the mock server replays. The tests assert that the canvases
+issue draw calls, the tape renders newest-first, transport commands reach the
+socket, and **zero frames are rejected**.
+
+**Why not screenshots.** A screenshot proves the UI looked right once, on one
+machine, and then rots silently. It also cannot run in CI. The jsdom tests run
+on every push and fail when the protocol drifts, which is the failure that
+actually happens.
+
+**What is genuinely missing.** The screenshot and the GIF. They are not
+committed because this environment could not drive a browser: the available
+Chrome window was occluded, which freezes the page's timers, and every capture
+timed out against a renderer that was alive but frozen. `viz/ui/README.md`
+says so and gives the commands to produce them, rather than shipping a
+mock-up.

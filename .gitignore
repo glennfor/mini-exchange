@@ -100,3 +100,8 @@ data/
 # Only the gzipped sample recording is committed; regenerate the plain one
 # with `python -m viz.server.record_frames`.
 viz/server/sample_frames.jsonl
+
+# UI build output and dependencies
+viz/ui/dist/
+viz/ui/node_modules/
+viz/ui/*.tsbuildinfo
