@@ -162,6 +162,7 @@ describe('the stats validator', () => {
     schedule_misses: 8,
     reader_lag: 9,
     reader_skipped: 10,
+    book_resyncs: 0,
   };
 
   it('accepts a complete frame', () => {

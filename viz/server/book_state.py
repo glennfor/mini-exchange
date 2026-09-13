@@ -10,6 +10,19 @@ This is an L2 view: price levels and aggregate quantities. The tap carries
 per-order events, so it could be an L3 reconstruction, but nothing the UI
 draws needs queue position and maintaining it would cost memory per resting
 order in a Python process.
+
+**A delta book cannot survive a gap.** Every level here exists because an Ack
+was seen and no Cancelled or Fill has cancelled it out. Lose one Cancelled to
+a full ring and that level rests forever: a phantom that never trades and
+never leaves. Lose enough of them and the two sides walk through each other
+and the dashboard shows a crossed book -- a book that the engine, which is
+price-time priority and matches on arrival, could not possibly have held.
+
+So the reader tells this class when it has skipped events, and the answer is
+to throw the book away and rebuild it from what comes next. A partial book
+that is converging is worth more than a complete-looking one that is wrong,
+and the alternative -- patching around the gap -- is how market-data bugs
+become permanent.
 """
 
 from __future__ import annotations
@@ -45,6 +58,33 @@ class BookState:
     last_trade: dict[str, int | str] | None = None
     pending_trades: list[dict[str, int | str]] = field(default_factory=list)
     events_applied: int = 0
+    resyncs: int = 0
+
+    def resync(self) -> None:
+        """Discards the book after a gap in the event stream.
+
+        Depth rebuilds from the orders acked after the gap, so it is thin for
+        a moment and then correct. Sequence and time are kept: they describe
+        where the stream is, not what the book holds.
+        """
+        self.bids.clear()
+        self.asks.clear()
+        self.orders.clear()
+        self.resyncs += 1
+
+    @property
+    def crossed(self) -> bool:
+        """True if the best bid is at or above the best ask.
+
+        The engine cannot produce this -- an order that crossed would have
+        traded -- so it is proof that this reconstruction has lost events.
+        Checked rather than assumed, because the failure is silent otherwise:
+        a crossed book still renders, it just renders a market that does not
+        exist.
+        """
+        if not self.bids or not self.asks:
+            return False
+        return max(self.bids) >= min(self.asks)
 
     def _levels(self, side: int) -> dict[int, Level]:
         return self.bids if side == 0 else self.asks

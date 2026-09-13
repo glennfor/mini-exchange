@@ -119,6 +119,7 @@ class TapPublisher:
         self.batch = batch
         self.max_lag = max_lag
         self.skipped = 0
+        self._drops_seen = reader.dropped
         self.book = BookState()
         self._last_published_seq: int | None = None
         self.transport = protocol.TransportState()
@@ -145,13 +146,29 @@ class TapPublisher:
         if self.transport.state == "paused" and self.transport.pending_steps <= 0:
             return
         budget = self.batch
+        gap = False
         if self.transport.pending_steps > 0:
             budget = min(budget, self.transport.pending_steps)
         elif self.reader.lag > self.max_lag:
             # Too far behind to catch up. Skip forward rather than show a
             # lagging replay while claiming to be live; the skip is counted
             # and published.
-            self.skipped += self.reader.skip_to_recent(budget)
+            jumped = self.reader.skip_to_recent(budget)
+            self.skipped += jumped
+            gap = gap or jumped > 0
+
+        # The engine discards rather than blocking when its ring fills, so a
+        # rising drop count is a hole in this stream. Either way the book
+        # below is now missing the events that would have taken orders out of
+        # it, and a delta book with holes in it is not a book -- see
+        # book_state.py. Throw it away here, before the post-gap records are
+        # applied on top of it.
+        drops = self.reader.dropped
+        if drops != self._drops_seen:
+            self._drops_seen = drops
+            gap = True
+        if gap:
+            self.book.resync()
 
         records = self.reader.read(budget)
         for record in records:
@@ -221,6 +238,7 @@ class TapPublisher:
             schedule_misses=snapshot.schedule_misses if snapshot else 0,
             reader_lag=self.reader.lag,
             reader_skipped=self.skipped,
+            book_resyncs=self.book.resyncs,
         )
 
 

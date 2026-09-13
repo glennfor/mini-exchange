@@ -177,6 +177,7 @@ describe('the dashboard', () => {
         schedule_misses: 3,
         reader_lag: 0,
         reader_skipped: 0,
+        book_resyncs: 0,
       });
     });
 
@@ -203,6 +204,7 @@ describe('the dashboard', () => {
           p99_ns: 200, p999_ns: 300, max_ns: 400, orders_resting: 10,
           ring_drops: 0, schedule_misses: 0, reader_lag: 140_000,
           reader_skipped: 7_300_000,
+          book_resyncs: 0,
         });
       });
 
@@ -282,7 +284,7 @@ describe('the dashboard', () => {
       ws.deliver({
         v: 1, type: 'stats', ops_per_sec: 1, p50_ns: 1, p99_ns: 2,
         p999_ns: 3, max_ns: 4, orders_resting: 0, ring_drops: 0,
-        schedule_misses: 0, reader_lag: 0, reader_skipped: 0,
+        schedule_misses: 0, reader_lag: 0, reader_skipped: 0, book_resyncs: 0,
       });
     });
     expect(screen.getByText('bad frames')).toBeTruthy();

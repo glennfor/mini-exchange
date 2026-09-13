@@ -102,6 +102,7 @@ def stats(
     schedule_misses: int,
     reader_lag: int = 0,
     reader_skipped: int = 0,
+    book_resyncs: int = 0,
 ) -> dict[str, Any]:
     """Engine statistics, once per second.
 
@@ -119,6 +120,11 @@ def stats(
       was unaffected.
     * `schedule_misses` -- the benchmark harness could not keep to its own
       arrival schedule, so its latency numbers describe the harness.
+
+    `book_resyncs` is the consequence of the first two: a gap of either kind
+    means the depth view was rebuilt from scratch, because a delta book that
+    has missed a cancellation carries the phantom for ever. A rising count
+    means the depth on screen is younger than the session.
     """
     return {
         "v": SCHEMA_VERSION,
@@ -133,6 +139,7 @@ def stats(
         "schedule_misses": schedule_misses,
         "reader_lag": reader_lag,
         "reader_skipped": reader_skipped,
+        "book_resyncs": book_resyncs,
     }
 
 

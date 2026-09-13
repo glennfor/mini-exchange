@@ -73,6 +73,16 @@ export interface StatsFrame {
    * behind, which is a different problem with a different fix.
    */
   reader_skipped: number;
+  /**
+   * How many times the server threw its depth view away and rebuilt it.
+   *
+   * A gap of either kind above leaves the server's delta book holding orders
+   * whose cancellations it never saw -- phantom levels that never leave, and
+   * eventually a crossed book the engine could not have produced. The server
+   * discards the book instead. A rising count means the depth on screen is
+   * younger than the session, not that the engine did anything wrong.
+   */
+  book_resyncs: number;
 }
 
 export interface TransportFrame {
@@ -110,6 +120,7 @@ const STATS_FIELDS = [
   'schedule_misses',
   'reader_lag',
   'reader_skipped',
+  'book_resyncs',
 ] as const satisfies readonly (keyof StatsFrame)[];
 
 export type TransportCommand =

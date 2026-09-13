@@ -39,6 +39,7 @@ export function EngineStats({ stats, rejectedFrames }: Props) {
   const viewSkipping = stats.reader_skipped > 0;
   const schemaDrift = rejectedFrames > 0;
   const saturated = stats.schedule_misses > 0;
+  const rebuilt = stats.book_resyncs > 0;
 
   return (
     <div className="flex h-full flex-col gap-2 overflow-hidden p-2">
@@ -72,6 +73,12 @@ export function EngineStats({ stats, rejectedFrames }: Props) {
           suffix={saturated ? 'SATURATED' : undefined}
         />
         <Row
+          label="book rebuilds"
+          value={formatCount(stats.book_resyncs)}
+          tone={rebuilt ? 'warn' : undefined}
+          suffix={rebuilt ? 'PARTIAL' : undefined}
+        />
+        <Row
           label="bad frames"
           value={formatCount(rejectedFrames)}
           tone={schemaDrift ? 'bad' : undefined}
@@ -92,6 +99,14 @@ export function EngineStats({ stats, rejectedFrames }: Props) {
             This viewer cannot drain the tap fast enough, so it jumped forward
             to stay current. The book above is live; the events in between were
             skipped. The engine was not affected.
+          </p>
+        )}
+        {rebuilt && (
+          <p className="text-accent">
+            A delta book cannot survive a gap: an order whose cancellation was
+            lost rests for ever. So the depth view is discarded and rebuilt
+            after every gap, and what you see is the book as reconstructed
+            since the last one &mdash; thin at first, then correct.
           </p>
         )}
         {schemaDrift && (

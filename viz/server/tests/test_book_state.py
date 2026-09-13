@@ -122,3 +122,54 @@ def test_a_level_never_goes_negative():
     bids, _ = book.depth(10)
     assert bids == []
     assert book.orders_resting == 0
+
+
+def test_a_lost_cancellation_leaves_a_phantom_that_crosses_the_book():
+    """The failure this is all for, reproduced in six lines.
+
+    Observed live: the dashboard showed bids at 100.2195 and asks at 100.1840,
+    a book crossed by 355 ticks that had been that way for minutes. A
+    price-time-priority engine cannot hold one -- an order that crossed would
+    have traded on arrival -- so the book on screen was the server's
+    reconstruction, not the engine's book.
+
+    The cause is that this is a delta book. A level exists here because an Ack
+    was seen and nothing has taken it away. Lose the Cancelled to a full ring
+    and the level rests for ever.
+    """
+    book = BookState()
+    book.apply(rec(0, EVENT_ACK, 1, 1002195, 500, side=0))  # a bid
+    # ...its cancellation is dropped by the tap and never arrives...
+    book.apply(rec(2, EVENT_ACK, 2, 1001840, 500, side=1))  # an ask, far below
+    assert book.crossed, "the reconstruction is now showing an impossible book"
+
+
+def test_a_gap_discards_the_book_rather_than_patching_around_it():
+    book = BookState()
+    book.apply(rec(0, EVENT_ACK, 1, 1002195, 500, side=0))
+    book.resync()
+    book.apply(rec(2, EVENT_ACK, 2, 1001840, 500, side=1))
+
+    assert not book.crossed
+    assert book.depth(10) == ([], [[1001840, 500, 1]])
+    assert book.orders_resting == 1, (
+        "the phantom's order record has to go too, or a later Cancelled for "
+        "it would reduce a level it no longer belongs to"
+    )
+    assert book.resyncs == 1
+
+
+def test_a_resync_keeps_where_the_stream_is():
+    # seq and time describe the stream, not the book, and the transport reads
+    # them; zeroing them would jump the scrubber back to the start.
+    book = BookState()
+    book.apply(rec(77, EVENT_ACK, 1, 1002100, 100, side=0))
+    book.resync()
+    assert book.seq == 77
+    assert book.t_ns == 77_000
+
+
+def test_an_empty_side_is_not_a_crossed_book():
+    book = BookState()
+    book.apply(rec(0, EVENT_ACK, 1, 1002100, 100, side=0))
+    assert not book.crossed

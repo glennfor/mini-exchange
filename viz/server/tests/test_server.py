@@ -14,7 +14,8 @@ from pathlib import Path
 import pytest
 
 from viz.server import protocol
-from viz.server.server import Hub, MockPublisher, load_frames
+from viz.server.server import Hub, MockPublisher, TapPublisher, load_frames
+from viz.server.shm_reader import EVENT_ACK, EVENT_CANCELLED, TapRecord
 
 websockets = pytest.importorskip("websockets")
 
@@ -218,14 +219,25 @@ async def test_a_paused_transport_stops_the_chart_rather_than_repeating_itself()
     books_at_pause = sum(1 for f in client.sent if f["type"] == "book")
     assert books_at_pause > 0, "it should have been publishing before the pause"
 
+    # Sampled twice, and the assertion is on the second interval. The
+    # publisher reads the transport once per cycle, so a pause landing
+    # mid-cycle lets exactly one already-started frame out; asserting on the
+    # first interval made this test fail about one run in five for a frame
+    # that is not the bug. What must hold is that the count stops *growing*.
+    await asyncio.sleep(0.1)
+    books_settled = sum(1 for f in client.sent if f["type"] == "book")
     await asyncio.sleep(0.2)
+    books_after = sum(1 for f in client.sent if f["type"] == "book")
     task.cancel()
     with contextlib.suppress(asyncio.CancelledError):
         await task
 
-    books_after = sum(1 for f in client.sent if f["type"] == "book")
-    assert books_after == books_at_pause, (
-        f"{books_after - books_at_pause} book frames arrived while paused; a "
+    assert books_settled - books_at_pause <= 1, (
+        f"{books_settled - books_at_pause} book frames arrived after the "
+        "pause; at most the one cycle already in flight may escape"
+    )
+    assert books_after == books_settled, (
+        f"{books_after - books_settled} book frames arrived while paused; a "
         "paused transport must publish no new time columns at all"
     )
 
@@ -241,3 +253,86 @@ def test_a_publisher_exposes_its_current_book_for_a_client_joining_paused():
     # After a frame has gone out, the publisher can hand it to a latecomer.
     publisher._last_book = {"v": 1, "type": "book", "seq": 7}
     assert publisher.book_frame()["seq"] == 7
+
+
+class FakeReader:
+    """A tap that can be told to lose events, so the gap path is testable."""
+
+    def __init__(self) -> None:
+        self.queue: list[TapRecord] = []
+        self.dropped = 0
+        self.lag = 0
+
+    def read(self, budget: int) -> list[TapRecord]:
+        out, self.queue = self.queue[:budget], self.queue[budget:]
+        return out
+
+    def skip_to_recent(self, keep: int) -> int:
+        return 0
+
+
+def _record(seq, etype, order_id, price, qty, side):
+    return TapRecord(
+        seq=seq, ts=seq * 1000, price=price, qty=qty, qty_remaining=0,
+        id=order_id, counter_id=0, level_index=0, type=etype, side=side,
+        reason=0, flags=0,
+    )
+
+
+def test_a_drop_in_the_tap_makes_the_server_rebuild_its_book():
+    """The bug this closes was visible on screen for minutes at a time.
+
+    The dashboard showed bids at 100.2195 against asks at 100.1840 -- crossed
+    by 355 ticks, and stuck. A price-time-priority engine cannot hold a
+    crossed book, so what was on screen was this server's reconstruction of
+    one, with orders in it whose cancellations had been dropped by a full tap
+    ring. The reconstruction had no way back: a phantom level never leaves.
+
+    It now throws the book away whenever the stream has a hole in it.
+    """
+    reader = FakeReader()
+    publisher = TapPublisher(reader, Hub())
+
+    reader.queue = [_record(1, EVENT_ACK, 1, 1002195, 500, 0)]
+    publisher._drain()
+    assert publisher.book.depth(5)[0] == [[1002195, 500, 1]]
+
+    # The cancellation that would have taken that bid away is dropped, and an
+    # ask arrives far below it.
+    reader.dropped += 12
+    reader.queue = [_record(3, EVENT_ACK, 2, 1001840, 500, 1)]
+    publisher._drain()
+
+    assert publisher.book.resyncs == 1
+    assert not publisher.book.crossed, (
+        "a crossed book is proof the reconstruction lost events; it must not "
+        "be published as though it were the engine's book"
+    )
+    assert publisher.book.depth(5) == ([], [[1001840, 500, 1]])
+
+
+def test_an_uninterrupted_stream_is_never_rebuilt():
+    # The counter has to mean something, so it must not tick on a clean run.
+    reader = FakeReader()
+    publisher = TapPublisher(reader, Hub())
+    reader.queue = [
+        _record(1, EVENT_ACK, 1, 1002000, 500, 0),
+        _record(2, EVENT_ACK, 2, 1002100, 500, 1),
+        _record(3, EVENT_CANCELLED, 1, 1002000, 500, 0),
+    ]
+    for _ in range(3):
+        publisher._drain()
+    assert publisher.book.resyncs == 0
+    assert publisher.book.depth(5) == ([], [[1002100, 500, 1]])
+
+
+def test_a_reader_that_starts_behind_does_not_count_as_a_gap():
+    # Attaching to an engine that has been running does not mean *this*
+    # server lost anything: the book is empty, and there is nothing to throw
+    # away. Counting it would report a rebuild for every session.
+    reader = FakeReader()
+    reader.dropped = 48_976
+    publisher = TapPublisher(reader, Hub())
+    reader.queue = [_record(1, EVENT_ACK, 1, 1002000, 500, 0)]
+    publisher._drain()
+    assert publisher.book.resyncs == 0
