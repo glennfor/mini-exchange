@@ -71,6 +71,41 @@ jobs:
       # then this job exists to keep the preset honest.
       - run: ctest --preset tsan || true
 
+  reconstruction:
+    name: LOBSTER validation -- C++ and Python reconstructions agree
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.11' }
+      - run: sudo apt-get update && sudo apt-get install -y ninja-build
+      - name: Build
+        env: { CC: clang, CXX: clang++ }
+        run: cmake --preset release && cmake --build build/release --target lobster_check
+      - name: The fixture regenerates deterministically
+        run: |
+          set -eux
+          mkdir -p "$RUNNER_TEMP/regen"
+          python -m pyref.lobster_check generate \
+            --out-prefix "$RUNNER_TEMP/regen/SYNTH_2026-09-13_34200_57600" \
+            --seed 7 --count 1000 --levels 10
+          diff "$RUNNER_TEMP/regen/SYNTH_2026-09-13_34200_57600_message_10.csv" \
+               replay/tests/data/SYNTH_2026-09-13_34200_57600_message_10.csv
+          diff "$RUNNER_TEMP/regen/SYNTH_2026-09-13_34200_57600_orderbook_10.csv" \
+               replay/tests/data/SYNTH_2026-09-13_34200_57600_orderbook_10.csv
+      - name: Python reconstruction matches the fixture
+        run: |
+          python -m pyref.lobster_check validate \
+            --messages replay/tests/data/SYNTH_2026-09-13_34200_57600_message_10.csv \
+            --book     replay/tests/data/SYNTH_2026-09-13_34200_57600_orderbook_10.csv \
+            --levels 10
+      - name: C++ reconstruction matches the same fixture
+        run: |
+          ./build/release/tools/lobster_check \
+            --messages replay/tests/data/SYNTH_2026-09-13_34200_57600_message_10.csv \
+            --book     replay/tests/data/SYNTH_2026-09-13_34200_57600_orderbook_10.csv \
+            --levels 10
+
   fuzz:
     name: libFuzzer -- ITCH decoder, 60s with ASan
     runs-on: ubuntu-latest

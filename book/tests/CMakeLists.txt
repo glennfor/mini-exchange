@@ -9,3 +9,6 @@ target_link_libraries(book_fast_test PRIVATE miniex::book miniex::replay)
 # other test in the binary pay for the counter.
 miniex_add_test(book_zero_alloc_test zero_alloc_test.cpp)
 target_link_libraries(book_zero_alloc_test PRIVATE miniex::book miniex::replay)
+
+miniex_add_test(book_md_test md_book_test.cpp)
+target_link_libraries(book_md_test PRIVATE miniex::book)

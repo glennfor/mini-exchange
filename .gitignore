@@ -93,3 +93,6 @@ feed/fuzz/corpus/*
 crash-*
 leak-*
 timeout-*
+
+# Market data is downloaded by scripts/fetch_data.sh, never committed.
+data/

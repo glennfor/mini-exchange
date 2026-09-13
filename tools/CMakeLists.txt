@@ -10,3 +10,11 @@ target_link_libraries(engine_replay PRIVATE
 add_executable(itch_stats itch_stats.cpp)
 target_link_libraries(itch_stats PRIVATE
   miniex_flags miniex::feed miniex_tool_support)
+
+add_executable(book_dump book_dump.cpp)
+target_link_libraries(book_dump PRIVATE
+  miniex_flags miniex::feed miniex::book miniex_tool_support)
+
+add_executable(lobster_check lobster_check.cpp)
+target_link_libraries(lobster_check PRIVATE
+  miniex_flags miniex::book miniex::replay miniex_tool_support)
