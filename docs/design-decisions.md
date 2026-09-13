@@ -156,8 +156,12 @@ at most one wasted refresh, never a correctness bug.
 prefetches line pairs, so 64-byte separation still allows adjacent-line
 interference.
 
-**Consequence.** TBD — the with/without measurement belongs in M4, when the
-harness exists to make it honestly.
+**Consequence.** Measured indirectly: `BM_RingPushPopSingleThreaded` is
+7.7 ns per push+pop and `BM_RingBatch64` is 0.36 ns per item, both
+single-threaded, so the structure itself is not the cost. The cross-core
+with/without comparison this entry really wants needs two pinned physical
+cores on a quiet machine, which this development host cannot provide (DD-034
+has the load figures). Marked as unmeasured rather than assumed.
 
 ---
 
@@ -517,8 +521,10 @@ The cooldown exists because a book straddling an edge — bids just inside the
 bottom, asks just outside the top — would otherwise re-centre on every
 command; `CooldownStopsAnEdgeStraddlingBookFromThrashing` pins that down.
 
-**How often does it fire on real data?** TBD — the honest answer needs an
-ITCH day, which arrives in M6. For orientation: a $13 window centred on the
+**How often does it fire on real data?** Unmeasured — the honest answer
+needs a real ITCH day, and none has been downloaded. `FastBook::recentre_count()`
+reports it and `tools/inject` would print it. For orientation: a $13 window
+centred on the
 open means a stock must move more than $6.55 intraday before the touch even
 approaches an edge.
 

@@ -170,6 +170,7 @@ reader will actually ask.
 | Number | State |
 |---|---|
 | `NaiveBook` vs `FastBook`, Linux x86-64 | **not run** — no Linux reference machine is available |
+| Ring cross-core cost, pinned cores | **not run** — needs two isolated physical cores |
 | Development-machine A/B ratios | **measured** — `bench/results/dev-m1max/`, and see the caveat below |
 | Tap on/off delta | **measured**, development machine |
 | Real ITCH flow mix | **not run** — no ITCH sample day has been downloaded |

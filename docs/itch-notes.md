@@ -166,9 +166,22 @@ is 602 MB/s on a contended machine with a coarse timer, so the decoder is in
 the expected range and is not the bottleneck in anything built on top of it.
 
 **This is decode-only.** Decode-plus-reconstruct is the number that matters
-for anything downstream, it will be lower, and it arrives with M7. Neither
-number has been produced on the Linux reference machine yet; both are
-development figures.
+for anything downstream, and on the same file it is **6.14 million
+messages/s, 184 MB/s** — three and a half times slower, because
+reconstruction touches a hash map and a price-level map per message where the
+decoder touches nothing:
+
+```
+$ ./build/release/tools/book_dump --file synthetic.itch --locate 1 --stats
+  decode + reconstruct: 0.07 s, 6.14 million messages/s, 184.1 MB/s
+```
+
+That ratio is the useful part. It says the decoder is not the bottleneck in
+anything built on it, which is the question the decode-only number cannot
+answer on its own.
+
+Neither figure has been produced on the Linux reference machine; both are
+development numbers on a loaded desktop.
 
 ## 7. Fuzzing
 
