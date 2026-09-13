@@ -255,6 +255,23 @@ public:
     return it == levels.end() ? 0 : it->second.total_qty;
   }
 
+  /// The side and price a reference number is resting at, or a default if it
+  /// is unknown. Kept narrow on purpose: `tape_print` needs the resting
+  /// order's side to derive the aggressor's, and an execution message does
+  /// not repeat it.
+  [[nodiscard]] Side side_of(OrderId ref) const {
+    const std::uint32_t slot = index_.find(ref);
+    return slot == kInvalidIndex ? Side::Buy : orders_[slot].side;
+  }
+  [[nodiscard]] Price price_of(OrderId ref) const {
+    const std::uint32_t slot = index_.find(ref);
+    return slot == kInvalidIndex ? kInvalidPrice : orders_[slot].price;
+  }
+  [[nodiscard]] Qty qty_of(OrderId ref) const {
+    const std::uint32_t slot = index_.find(ref);
+    return slot == kInvalidIndex ? 0 : orders_[slot].shares;
+  }
+
   [[nodiscard]] std::size_t order_count() const { return live_; }
   [[nodiscard]] std::size_t level_count(Side side) const {
     return levels_for(side).size();

@@ -18,3 +18,15 @@ target_link_libraries(book_dump PRIVATE
 add_executable(lobster_check lobster_check.cpp)
 target_link_libraries(lobster_check PRIVATE
   miniex_flags miniex::book miniex::replay miniex_tool_support)
+
+add_executable(inject inject.cpp)
+target_link_libraries(inject PRIVATE
+  miniex_flags miniex::feed miniex::engine miniex::replay miniex_tool_support)
+
+add_executable(flow_profile flow_profile.cpp)
+target_link_libraries(flow_profile PRIVATE
+  miniex_flags miniex::feed miniex::book miniex_tool_support)
+
+add_executable(tape_print tape_print.cpp)
+target_link_libraries(tape_print PRIVATE
+  miniex_flags miniex::feed miniex::book miniex_tool_support)

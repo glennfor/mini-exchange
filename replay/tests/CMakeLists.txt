@@ -5,3 +5,7 @@ miniex_add_test(replay_lobster_test lobster_test.cpp)
 target_link_libraries(replay_lobster_test PRIVATE miniex::replay miniex::book)
 target_compile_definitions(replay_lobster_test PRIVATE
   MINIEX_LOBSTER_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
+
+miniex_add_test(replay_injector_test injector_test.cpp)
+target_link_libraries(replay_injector_test PRIVATE
+  miniex::replay miniex::book miniex::engine miniex::feed)
