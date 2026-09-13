@@ -195,19 +195,26 @@ The "no infinite loop" part is made testable by passing a message-count bound
 to `decode()` and trapping if the decoder returns it — a decoder that failed to
 advance would hit the bound rather than spinning forever undetected.
 
-Local run, Homebrew clang 20, 26 seconds, six committed seeds:
+Local run, Homebrew clang 20, from the six committed seeds:
 
 ```
-Done 21537748 runs in 26 second(s)
-stat::average_exec_per_sec:     828374
-stat::new_units_added:          1587
+Done 233505582 runs in 1151 second(s)
+stat::number_of_executed_units: 233505582
+stat::average_exec_per_sec:     202871
+stat::new_units_added:          1636
+stat::peak_rss_mb:              38
 ```
 
-No crashes. Note that this local run is **without AddressSanitizer**: the
-compiler-rt ASan runtime does not work on this host (DD-006), so the local
-fuzzer verifies "does not crash or hang" but not "does not read out of
-bounds". CI runs it with ASan on, which is where the out-of-bounds coverage
-comes from. The seeds are committed; the inputs the fuzzer discovers are not.
+**233 million executions over 19 minutes, no crashes, no timeouts, no
+out-of-memory.** Peak RSS held flat at 38 MB throughout, which is its own
+small result: a decoder that leaked on malformed input would show it here
+long before it crashed.
+
+Note that this local run is **without AddressSanitizer**: the compiler-rt
+ASan runtime does not work on this host (DD-006), so it verifies "does not
+crash or hang" but not "does not read out of bounds". CI runs it with ASan
+on, which is where the out-of-bounds coverage comes from. The seeds are
+committed; the 1,636 inputs the fuzzer discovered are not.
 
 The unit suite also contains the cheap version of the same idea:
 `SingleByteCorruptionsNeverCrashOrHang` takes a valid stream and corrupts one

@@ -25,6 +25,7 @@ words people use loosely.
 | The reconstruction matches an independently-written book, message by message, 10 levels | **yes** — on a synthetic LOBSTER pair |
 | The reconstruction matches a **real** LOBSTER sample day | **no** — no sample day has been downloaded |
 | The divergence table against real ITCH order flow | **no** — same reason |
+| The ITCH decoder survives arbitrary bytes | **yes** — 233 M fuzz executions, 19 minutes, no crash, flat RSS |
 | Latency percentiles on a machine that can resolve them | **no** — see *Results* |
 | A screenshot of the dashboard | **no** — see *The dashboard* |
 
