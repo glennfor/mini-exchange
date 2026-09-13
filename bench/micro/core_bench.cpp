@@ -5,6 +5,26 @@
 /// with numbers rather than assertions: the cached-counter SPSC ring
 /// (DD-007), backward-shift deletion (DD-008), and the hierarchical bitset
 /// against a linear scan (the reason `bitset_ladder.hpp` exists at all).
+///
+/// ## A note on the harness, which cost real time to learn
+///
+/// None of these benchmarks use `state.PauseTiming()` / `ResumeTiming()`.
+///
+/// The obvious way to benchmark an operation that consumes its input -- a
+/// cancel, an add that creates a level -- is to rebuild the structure inside
+/// a paused region. That is wrong twice over. Pause/resume costs microseconds
+/// against operations that cost nanoseconds, so a naive version of the cancel
+/// benchmark reported **98 us per cancel** when the real figure is 28 ns. And
+/// because Google Benchmark excludes paused time from the measurement while
+/// still spending it, it keeps raising the iteration count to reach its
+/// minimum *measured* time -- one benchmark here ran for over two minutes
+/// without finishing.
+///
+/// Instead the structure is rebuilt only when it is exhausted, in the timed
+/// region, so the rebuild is amortised over thousands of operations and
+/// contributes a fraction of a percent to each sample. That is a small,
+/// honest bias in a known direction, which is a far better trade than a large
+/// dishonest one.
 
 #include <cstdint>
 #include <memory>
@@ -52,9 +72,7 @@ void BM_HashInsert(benchmark::State& state) {
   OrderId id = 4'294'967'296ULL;
   for (auto _ : state) {
     if (map.size() >= kEntries) {
-      state.PauseTiming();
       map.clear();
-      state.ResumeTiming();
     }
     bool inserted = map.insert(id++, 1);
     benchmark::DoNotOptimize(inserted);
@@ -96,13 +114,11 @@ void BM_HashErase(benchmark::State& state) {
   OpenHashMap map(kEntries);
   std::size_t next = 0;
   for (auto _ : state) {
-    state.PauseTiming();
     if (map.empty()) {
       for (std::size_t i = 0; i < kEntries; ++i)
         (void)map.insert(base + i, static_cast<std::uint32_t>(i));
       next = 0;
     }
-    state.ResumeTiming();
     bool erased = map.erase(base + next++);
     benchmark::DoNotOptimize(erased);
   }

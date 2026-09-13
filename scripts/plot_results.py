@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import math
 import sys
 from pathlib import Path
 
@@ -35,30 +36,89 @@ def load_rows(results_csv: Path) -> list[dict[str, str]]:
         return list(csv.DictReader(handle))
 
 
+def _percentile_to_y(p: float) -> float:
+    """Compresses the percentile axis towards 100.
+
+    A linear percentile axis gives half its height to the region between p0
+    and p50, where nothing interesting happens, and squeezes p99 to p100 --
+    the entire point of a latency chart -- into the top 1% of the pixels.
+    This maps p to log10(100/(100-p)), so each decade of "nines" gets equal
+    space: p90, p99, p99.9 and p99.99 are evenly spaced.
+
+    The divisor is 5, not 4, so that p99.99 lands at 0.8 and the maximum has
+    the top of the axis to itself. With 4 they both mapped to 1.0 and their
+    tick labels drew on top of each other.
+    """
+    if p >= 100:
+        return 1.0
+    if p <= 0:
+        return 0.0
+    return min(1.0, math.log10(100.0 / (100.0 - p)) / 5.0)
+
+
 def plot_cdf(out_dir: Path, plt) -> Path | None:
-    cdfs = sorted(out_dir.glob("cdf_*.csv"))
+    """Latency CDF: log-x, nines-compressed y, open-loop series only.
+
+    Service-time runs (offered rate 0) are excluded rather than drawn in a
+    lighter shade: they are a *different quantity* -- dequeue to handler
+    return, with no queueing in them at all -- and putting them on the same
+    axes as end-to-end latency invites exactly the comparison that must not be
+    made. The closed-loop run is included, dashed and labelled, because the
+    gap between it and its open-loop twin is the single most informative thing
+    in the chart.
+    """
+    cdfs = sorted(out_dir.glob("cdf_*_1.csv"))
     if not cdfs:
         return None
-    fig, ax = plt.subplots(figsize=(9, 5.5))
+
+    series = []
     for path in cdfs:
-        # cdf_<label>_<run>.csv -- one line per label, first run only, so the
-        # chart stays readable.
         label = path.stem[len("cdf_") :].rsplit("_", 1)[0]
-        if not path.stem.endswith("_1"):
-            continue
+        if "throughput" in label:
+            continue  # service time, not latency
         with path.open(newline="", encoding="utf-8") as handle:
             rows = list(csv.DictReader(handle))
-        pct = [float(r["percentile"]) for r in rows]
-        ns = [int(r["latency_ns"]) for r in rows]
-        # x = latency, y = percentile, log-x: the standard latency CDF.
-        ax.plot(ns, pct, marker="o", markersize=3, linewidth=1.4, label=label)
+        points = [
+            (int(r["latency_ns"]), float(r["percentile"]))
+            for r in rows
+            if int(r["latency_ns"]) > 0
+        ]
+        if points:
+            series.append((label, points))
+    if not series:
+        return None
+
+    fig, ax = plt.subplots(figsize=(11, 6))
+    colours = plt.get_cmap("tab20")(range(20))
+    for i, (label, points) in enumerate(sorted(series)):
+        closed = "closed-loop" in label
+        ax.plot(
+            [ns for ns, _ in points],
+            [_percentile_to_y(p) for _, p in points],
+            marker="o",
+            markersize=2.5,
+            linewidth=2.0 if closed else 1.3,
+            linestyle="--" if closed else "-",
+            color=colours[i % 20],
+            label=label + (" (comparison only)" if closed else ""),
+        )
+
     ax.set_xscale("log")
     ax.set_xlabel("latency (ns, log scale)")
     ax.set_ylabel("percentile")
-    ax.set_ylim(0, 100.5)
+    ticks = [0, 50, 90, 99, 99.9, 99.99, 100]
+    ax.set_yticks([_percentile_to_y(p) for p in ticks])
+    ax.set_yticklabels(["0", "p50", "p90", "p99", "p99.9", "p99.99", "max"])
+    ax.set_ylim(0, 1.02)
     ax.grid(True, which="both", alpha=0.25)
-    ax.legend(fontsize=8)
-    ax.set_title("End-to-end command latency, open loop")
+    ax.legend(fontsize=7, loc="center left", bbox_to_anchor=(1.01, 0.5),
+              frameon=False)
+    ax.set_title(
+        "End-to-end command latency, open loop\n"
+        "development machine -- 41 ns timer, loaded desktop; read ratios, "
+        "not absolutes",
+        fontsize=10,
+    )
     fig.tight_layout()
     path = out_dir / "latency_cdf.png"
     fig.savefig(path, dpi=150)
@@ -68,12 +128,23 @@ def plot_cdf(out_dir: Path, plt) -> Path | None:
 def plot_percentile_bars(out_dir: Path, rows: list[dict[str, str]], plt) -> Path | None:
     if not rows:
         return None
-    # One bar group per (book, pattern, loop); if a configuration was repeated,
-    # take the median run, because reporting the best run is cheating.
+    # One bar group per (book, pattern, loop), and **service-time rows are
+    # excluded**. They carry loop="open" like everything else, so grouping
+    # without checking `measure` silently averaged dequeue-to-return samples
+    # together with end-to-end ones -- which moved NaiveBook's p50 from 458 ns
+    # to 300 ns and would have been a quietly wrong chart next to a correct
+    # table.
+    #
+    # Where a configuration was repeated, the median run is used. Reporting
+    # the best run is cheating.
     groups: dict[str, list[dict[str, str]]] = {}
     for row in rows:
+        if row.get("measure") == "service_time":
+            continue
         key = f"{row['book']}/{row['pattern']}/{row['loop']}"
         groups.setdefault(key, []).append(row)
+    if not groups:
+        return None
 
     labels = list(groups)
     fig, ax = plt.subplots(figsize=(10, 5.5))
@@ -91,7 +162,12 @@ def plot_percentile_bars(out_dir: Path, rows: list[dict[str, str]], plt) -> Path
     ax.set_xticklabels(labels, rotation=20, ha="right", fontsize=8)
     ax.grid(True, axis="y", which="both", alpha=0.25)
     ax.legend(fontsize=8, ncol=len(PERCENTILE_COLUMNS))
-    ax.set_title("Latency percentiles by configuration (median of runs)")
+    ax.set_title(
+        "End-to-end latency percentiles by configuration (median of runs)\n"
+        "development machine -- 41 ns timer, loaded desktop; read ratios, "
+        "not absolutes",
+        fontsize=10,
+    )
     fig.tight_layout()
     path = out_dir / "latency_percentiles.png"
     fig.savefig(path, dpi=150)

@@ -1,0 +1,59 @@
+# miniex machine report
+generated: 2026-09-13T18:06:24Z
+host:      FSIMacbookPro-019
+uname:     Darwin FSIMacbookPro-019 25.6.0 Darwin Kernel Version 25.6.0: Fri Jul 31 19:18:49 PDT 2026; root:xnu-12377.161.14~5/RELEASE_ARM64_T6000 arm64
+
+== load at the time of the run ==
+14:06  up 2 days, 16:50, 4 users, load averages: 34.41 84.32 117.03
+
+A benchmark taken on a machine that is doing other work measures the other
+work as much as the benchmark. Tail latency is the first thing to go: one
+scheduler preemption is tens of microseconds, which lands directly in p99.9.
+
+Rule of thumb: a load average above the core count means the latency
+percentiles in this result set are describing the machine, not the engine.
+Throughput survives a busy machine far better than tails do.
+
+== top consumers ==
+ 102.2%  /Library/Application
+  99.3%  /Applications/Google
+  29.1%  /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/Metadata.framework/Versions/A/Support/mdworker_shared
+  14.0%  /Library/SystemExtensions/B586EAC1-A37E-4489-9626-372DCCFE66AC/com.paloaltonetworks.traps.securityextension.systemextension/Contents/MacOS/com.paloaltonetworks.traps.securityextension
+  12.2%  /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/Metadata.framework/Versions/A/Support/mds_stores
+  11.5%  /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/Metadata.framework/Versions/A/Support/mds
+
+== git ==
+1de79b3d4dccdd1808ffe94618b27ec629c055a6
+WORKING TREE DIRTY -- this result is not reproducible from a commit
+
+== compiler ==
+c++: Apple clang version 17.0.0 (clang-1700.6.3.2)
+clang++: Apple clang version 17.0.0 (clang-1700.6.3.2)
+g++: Apple clang version 17.0.0 (clang-1700.6.3.2)
+cmake version 3.27.6
+
+== cpu ==
+Apple M1 Max
+physical logical ncpu: 10 10 10
+performance-cores efficiency-cores: 8 2
+memory: 32.0 GiB
+
+== timing ==
+This is an Apple Silicon machine. The architectural counter (cntvct_el0)
+ticks at approximately 24 MHz, so its resolution is ~41 ns -- coarser than
+the operations being measured. Numbers from this machine are development
+numbers: useful for A/B comparison, useless as absolute sub-microsecond
+percentiles.
+
+There is also no working equivalent of taskset/isolcpus, and the scheduler
+may move a thread between performance and efficiency cores mid-run.
+
+Publishable numbers come from x86-64 Linux. See docs/benchmarking.md.
+
+== engine build constants ==
+(these are CMake cache variables; see cmake/MiniExchangeConfig.cmake)
+MINIEX_COMPLETED_RING:STRING=65536
+MINIEX_LADDER_TICKS:STRING=131072
+MINIEX_MAX_ORDERS:STRING=4194304
+MINIEX_RING_CAPACITY:STRING=65536
+MINIEX_TAP_CAPACITY:STRING=1048576

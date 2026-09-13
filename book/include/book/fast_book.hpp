@@ -58,6 +58,7 @@
 #include "core/config.hpp"
 #include "core/object_pool.hpp"
 #include "core/open_hash_map.hpp"
+#include "core/prefault.hpp"
 #include "core/types.hpp"
 
 #include "book/book_interface.hpp"
@@ -120,6 +121,12 @@ public:
                 std::vector<PriceLevel>(kLadderTicks, empty_level())} {
     if (cfg_.tick < 1) cfg_.tick = 1;
     if (cfg_.centre_price > 0) set_base_from_centre(cfg_.centre_price);
+    // The ladder is 16 MB per side at the default width, and almost all of it
+    // is never touched -- so without this, the pages behind the levels that
+    // *are* used fault in one at a time during the run, scattered through
+    // p99 and p99.9. Construction is allowed to be slow; steady state is not.
+    for (auto& side : ladder_)
+      prefault(side.data(), side.size() * sizeof(PriceLevel));
   }
 
   FastBook(const FastBook&) = delete;

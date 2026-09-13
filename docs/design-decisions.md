@@ -828,3 +828,53 @@ Chrome window was occluded, which freezes the page's timers, and every capture
 timed out against a renderer that was alive but frozen. `viz/ui/README.md`
 says so and gives the commands to produce them, rather than shipping a
 mock-up.
+
+---
+
+## DD-034 — Pre-fault the pool, the index and the ladder at construction
+
+**Context.** `FastBook` at 262144 orders allocates roughly 40 MB across its
+slab, its hash table and its price ladder. `operator new` returns virtual
+addresses; the physical pages behind them do not exist until something writes
+to each one, and each of those first writes is a page fault.
+
+**What made it visible.** The open-loop harness reported `FastBook`'s p99 as
+*worse* than `NaiveBook`'s, which contradicted every microbenchmark: in
+service time (dequeue to handler return) `FastBook` was better (375 ns against
+500 ns at p99), and in the mixed-flow microbenchmark it was 1.68× faster.
+
+The difference between those two measurements is what they see. A
+microbenchmark faults its whole working set in during the warm-up iterations
+Google Benchmark discards. A throughput number amortises ten thousand faults
+over a million commands. An **open-loop tail-latency measurement sees every
+one of them**, scattered through p99 and p99.9, because a page fault is a trap
+into the kernel and a TLB shootdown — microseconds, landing on whichever
+unlucky command triggered it.
+
+`NaiveBook` pays a smaller version of the same cost, spread over many small
+allocations, so the artefact made the slower book look better.
+
+**Choice.** `core/prefault.hpp` writes one byte per 4 KB page, and
+`ObjectPool`, `OpenHashMap` and `FastBook`'s ladder all call it in their
+constructors. Construction is allowed to be slow; steady state is not, and
+this is the standard thing a latency-sensitive system does at start-up.
+
+A **write**, not a read: reading an untouched anonymous page may be served
+from the shared zero page, deferring the real allocation to the first write —
+exactly the moment this exists to avoid.
+
+**Consequence — and the honest caveat.** After the change, `FastBook`'s
+open-loop p99.9 on this machine came out at 106 µs against 730 µs before, and
+its p99 at 14.6 µs against 34.8 µs. Those look like a large win and they
+probably are, but **this development machine cannot support the claim**: its
+load average during these runs was between 34 and 124 on ten cores, with
+Google Drive alone taking a full core. One scheduler preemption is tens of
+microseconds and lands straight in p99.9, so the tails here describe the
+machine at least as much as the engine.
+
+The change is kept because the reasoning is sound and the cost is a few
+milliseconds at start-up, not because the measurement settles it. It is
+recorded here as *suggestive*, and `scripts/machine_report.sh` now captures
+the load average and the top CPU consumers so that a future reader can see
+immediately whether a result set was taken on a quiet machine. This one was
+not.

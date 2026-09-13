@@ -63,7 +63,16 @@ public:
     name_ = normalise(name);
     size_ = tap_segment_size(capacity);
 
-    fd_ = ::shm_open(name_.c_str(), O_CREAT | O_RDWR, 0600);
+    // Unlink any leftover segment of the same name before creating.
+    //
+    // A POSIX shared-memory object outlives the process that made it, and on
+    // macOS `ftruncate` on an object that has already been sized fails with
+    // EINVAL -- so a second run of the same binary would open the stale
+    // segment, fail to resize it, and report "cannot open the tap segment"
+    // with no hint that the cause was a previous run. Creating exclusively
+    // after an unlink makes each run start from a known-empty segment.
+    (void)::shm_unlink(name_.c_str());
+    fd_ = ::shm_open(name_.c_str(), O_CREAT | O_EXCL | O_RDWR, 0600);
     if (fd_ < 0) {
       error_ = "shm_open(" + name_ + "): " + std::strerror(errno);
       return false;

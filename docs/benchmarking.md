@@ -132,6 +132,21 @@ pinning that did not happen: `thread_policy_set` with an affinity tag is a
 hint the scheduler may ignore, and the scheduler may move a thread between
 performance and efficiency cores mid-run.
 
+### Charts
+
+`scripts/plot_results.py <results-dir>` produces two, and only two:
+
+* **`latency_cdf.png`** — percentile against latency, **log x**. A linear x
+  axis spends 95% of its width on the region between p0 and p50 and squashes
+  the entire tail into the last few pixels, which is the opposite of useful.
+* **`latency_percentiles.png`** — the same six percentiles side by side for
+  every configuration, so a "2× faster" claim can be checked at the tail as
+  well as at the median. It takes the **median** run where a configuration was
+  repeated, because reporting the best run is cheating.
+
+It warns if `machine.txt` is missing from the directory, because a chart
+without its machine report is a picture of a number rather than a result.
+
 ## 6. The six required comparisons
 
 `bench_all.sh` produces all six. Each exists to answer a question a skeptical
@@ -154,11 +169,53 @@ reader will actually ask.
 
 | Number | State |
 |---|---|
-| `NaiveBook` baseline, Linux x86-64 | TBD — no Linux reference machine has been run yet |
-| `FastBook` comparison | TBD — `FastBook` lands in M5 |
-| Tap on/off delta | TBD — the tap lands in M9 |
-| Real ITCH flow mix | TBD — `flow_profile` lands in M8 |
-| Development-machine A/B numbers | produced by `bench_all.sh`; **not published as absolute percentiles** (41 ns timer) |
+| `NaiveBook` vs `FastBook`, Linux x86-64 | **not run** — no Linux reference machine is available |
+| Development-machine A/B ratios | **measured** — `bench/results/dev-m1max/`, and see the caveat below |
+| Tap on/off delta | **measured**, development machine |
+| Real ITCH flow mix | **not run** — no ITCH sample day has been downloaded |
+| Flamegraph and `perf stat` | **not run** — both need `perf`, which needs Linux |
 
-Every `TBD` above is a number that has not been measured. None of them will be
-replaced by an estimate.
+### The caveat that applies to every number in this repository
+
+The development machine is an Apple M1 Max. Its architectural counter measures
+**23,999,995 Hz — 41 ns per tick**. That is coarser than the operations being
+measured, so:
+
+* **throughput figures are meaningful** — they are counts over a whole run,
+  and 41 ns of granularity on a multi-second measurement is nothing;
+* **per-operation figures from Google Benchmark are meaningful** — it measures
+  CPU time over millions of iterations, not one operation;
+* **latency percentiles are not.** A p50 that reads "541 ns" on this machine
+  is 13 ticks; a p50 that reads "124 ns" is 3. The quantisation is visible in
+  the numbers, and `engine_bench` prints a banner saying so on every run.
+
+So this repository publishes **ratios and throughputs**, and marks every
+latency percentile as development-only. Nothing here should be quoted as "the
+p99 of this engine".
+
+### The second caveat: this machine was not quiet
+
+`scripts/machine_report.sh` captures the load average and the top CPU
+consumers, and the committed report shows a load average between 34 and 124 on
+a ten-core machine, with one background process taking a full core throughout.
+
+Throughput survives that reasonably well. **Tail latency does not**: a single
+scheduler preemption is tens of microseconds and lands directly in p99.9. Any
+percentile past p90 in this result set is describing the machine at least as
+much as the engine.
+
+This is why the rule about `isolcpus`, `nohz_full`, a pinned pair of physical
+cores and a fixed frequency governor is not pedantry. Without it you are not
+measuring your program.
+
+### Reading `bench/results/dev-m1max/`
+
+Look at `schedule_misses` before any percentile. At the offered rates used
+here the open-loop runs are saturated, which the harness announces — in that
+regime the distribution describes the harness, not the engine, and the
+`service_time` rows (offered rate 0, dequeue-to-return) are the usable ones.
+
+That is not a flaw in the runs; it is what an honest open-loop harness does
+when you offer a machine more load than it can take. The alternative — quietly
+reporting the percentiles anyway — is the thing this whole section exists to
+prevent.

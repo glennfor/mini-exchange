@@ -69,7 +69,11 @@ Testing/
 .cache/
 
 # Project-specific
-data/
+# Anchored to the repository root: an unanchored `data/` also matches
+# replay/tests/data/, which is a committed test fixture. That mistake meant
+# the LOBSTER validation fixture was missing from a fresh clone and its test
+# failed there while passing locally -- found by actually cloning.
+/data/
 *.itch
 *.itch.gz
 *.csv.gz
@@ -95,7 +99,7 @@ leak-*
 timeout-*
 
 # Market data is downloaded by scripts/fetch_data.sh, never committed.
-data/
+/data/
 
 # Only the gzipped sample recording is committed; regenerate the plain one
 # with `python -m viz.server.record_frames`.

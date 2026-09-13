@@ -23,6 +23,7 @@
 #include <type_traits>
 
 #include "core/cache.hpp"
+#include "core/prefault.hpp"
 #include "core/types.hpp"
 
 #ifndef NDEBUG
@@ -54,6 +55,10 @@ public:
 #ifndef NDEBUG
     live_.assign(capacity, false);
 #endif
+    // reset() threads the free list through every slot, which faults the slab
+    // in as a side effect. Doing it explicitly first means the guarantee does
+    // not depend on that implementation detail staying true.
+    prefault(slab_, sizeof(T) * capacity);
     reset();
   }
 

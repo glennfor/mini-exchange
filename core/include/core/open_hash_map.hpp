@@ -36,6 +36,7 @@
 #include <new>
 
 #include "core/cache.hpp"
+#include "core/prefault.hpp"
 #include "core/types.hpp"
 
 #ifndef NDEBUG
@@ -72,6 +73,9 @@ public:
         max_entries_(max_entries),
         buckets_(static_cast<Bucket*>(::operator new[](
             sizeof(Bucket) * capacity_, std::align_val_t{kCacheLine}))) {
+    // clear() writes every bucket, which faults the table in. Stated rather
+    // than relied upon; see core/prefault.hpp for why it matters.
+    prefault(buckets_, sizeof(Bucket) * capacity_);
     clear();
   }
 

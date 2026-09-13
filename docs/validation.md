@@ -89,6 +89,7 @@ people make loosely.
 |---|---|
 | Reconstruction vs an independently-written Python reconstruction, 1000 messages, 10 levels, after every message | **passing** |
 | Same, with 876 crossed/locked states in the fixture | **passing** |
+| The fixture is present in a fresh clone | **passing** — it was not, for several commits; see below |
 | Reconstruction vs a **real LOBSTER sample day** | **not yet run** — no sample day has been downloaded |
 | ITCH ↔ LOBSTER cross-check | **not yet run** — see §6 |
 
@@ -110,6 +111,14 @@ contains things a generator does not think to produce: odd lots, halts,
 auction imbalance messages, LULD bands, reference numbers that wrap
 expectations, and the specific sequencing quirks of one venue on one day. A
 pass here is a necessary condition, not the claim.
+
+One note on the fixture, because it is the kind of thing that quietly stops
+being true: for several commits the fixture files were **not actually in the
+repository**. `.gitignore` carried an unanchored `data/` rule, meant for
+downloaded market data, which also matched `replay/tests/data/`. The test
+passed locally and failed in a fresh clone. It was found by cloning the
+repository and running the tests in the clone, which is the only way that
+class of bug is found, and the rule is now anchored to the repository root.
 
 Reproduce it with:
 

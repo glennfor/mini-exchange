@@ -24,6 +24,17 @@ COMMANDS="${MINIEX_BENCH_COMMANDS:-2000000}"
 RATE="${MINIEX_BENCH_RATE:-2000000}"
 REPEATS="${MINIEX_BENCH_REPEATS:-3}"
 
+# FastBook's pool is sized here rather than left at the compile-time ceiling.
+#
+# The default kMaxOrders is 4,194,304, which means a 256 MB slab plus a 128 MB
+# index -- nearly 400 MB of cold pages that the benchmark then page-faults its
+# way through. NaiveBook allocates lazily and pays none of that, so comparing
+# the two at the default made FastBook look *slower*, which is an artefact of
+# the sizing rather than a fact about the data structures. This value is
+# comfortably above the live order population the flow generator sustains, and
+# it is recorded in every CSV row's max_orders column.
+MAX_ORDERS="${MINIEX_BENCH_MAX_ORDERS:-262144}"
+
 say() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 
 say "machine report -> $OUT_DIR/machine.txt"
@@ -44,7 +55,7 @@ run() {
   local label="$1"; shift
   for i in $(seq 1 "$REPEATS"); do
     say "$label (run $i/$REPEATS)"
-    "$@" --commands "$COMMANDS" --csv "$CSV" \
+    "$@" --commands "$COMMANDS" --max-orders "$MAX_ORDERS" --csv "$CSV" \
          --cdf "$OUT_DIR/cdf_${label}_${i}.csv"
   done
 }
@@ -96,7 +107,15 @@ run "fast-wide-spread"     "$BENCH" --book fast --rate "$RATE" --seed 1 \
     --pattern wide-spread --warmup 10000
 
 say "microbenchmarks -> $OUT_DIR/micro.json"
+# min_time is capped and repetitions fixed, reporting the median. The
+# mixed-flow benchmarks construct an engine and replay 100,000 commands per
+# iteration, so at Google Benchmark's default min-time this phase runs for
+# tens of minutes without the extra precision buying anything -- the run-to-
+# run spread on a desktop dwarfs it.
 ./build/release/bench/micro_bench \
+  --benchmark_min_time="${MINIEX_MICRO_MIN_TIME:-0.4s}" \
+  --benchmark_repetitions="${MINIEX_MICRO_REPEATS:-3}" \
+  --benchmark_report_aggregates_only=true \
   --benchmark_format=json \
   --benchmark_out="$OUT_DIR/micro.json" \
   --benchmark_out_format=json

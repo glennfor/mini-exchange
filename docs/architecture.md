@@ -105,9 +105,20 @@ compared with `diff`.
 |---|---|---|
 | Command text | `engine/command_parser.hpp`, `pyref/` | hand-written tests, recorded replays, minimised reproducers |
 | Event text | `engine/event_format.hpp`, `pyref/` | differential comparison by `diff` |
-| Tap record | `viz/tap/` (M9) | 64-byte binary, versioned shm header |
-| WebSocket JSON | `viz/server/` (M9) | versioned `v` field on every frame |
+| Tap record | `viz/tap/include/viz/tap_layout.hpp` | 64-byte binary, versioned shm header |
+| WebSocket JSON | `viz/server/protocol.py` | versioned `v` field on every frame |
 
 The first two are specified in `docs/matching-semantics.md` and implemented
-twice on purpose. The last two are versioned because a schema that drifts
-silently produces blank panels rather than errors.
+twice on purpose — once in C++ and once in Python — so that agreement between
+them means something.
+
+The last two are versioned **and cross-checked**, because a schema that drifts
+silently produces blank panels rather than errors:
+
+* the shared-memory layout is declared in C++ and re-declared in Python, and
+  `viz/server/tests/test_layout.py` runs `tools/tap_layout_dump` to compare
+  them field by field, including every field's offset within a record;
+* the WebSocket schema is declared in `viz/server/protocol.py` and in
+  `viz/ui/src/protocol.ts`, and both `viz/ui/src/protocol.test.ts` and
+  `viz/ui/src/App.test.tsx` parse the committed sample recording — the same
+  bytes the mock server replays — and fail if a single frame is rejected.

@@ -15,6 +15,22 @@ printf 'generated: %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 printf 'host:      %s\n' "$(hostname)"
 printf 'uname:     %s\n' "$(uname -a)"
 
+section "load at the time of the run"
+uptime
+echo
+cat <<'NOTE'
+A benchmark taken on a machine that is doing other work measures the other
+work as much as the benchmark. Tail latency is the first thing to go: one
+scheduler preemption is tens of microseconds, which lands directly in p99.9.
+
+Rule of thumb: a load average above the core count means the latency
+percentiles in this result set are describing the machine, not the engine.
+Throughput survives a busy machine far better than tails do.
+NOTE
+
+section "top consumers"
+ps aux | sort -rn -k3 | head -6 | awk '{printf "%6s%%  %s\n", $3, $11}'
+
 section "git"
 git rev-parse HEAD 2>/dev/null || echo "not a git repository"
 if ! git diff --quiet 2>/dev/null; then
