@@ -6,12 +6,12 @@ requires-python = ">=3.11"
 dependencies = []
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "ruff>=0.6", "numpy", "pandas", "matplotlib"]
+dev = ["pytest>=8", "pytest-asyncio>=0.24", "ruff>=0.6", "websockets>=12", "matplotlib"]
 
 [tool.ruff]
 line-length = 88
 target-version = "py311"
-src = ["pyref", "scripts"]
+src = ["pyref", "viz", "scripts"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
@@ -27,5 +27,7 @@ ignore = [
 "pyref/tests/*" = ["E501"]
 
 [tool.pytest.ini_options]
-testpaths = ["pyref"]
+testpaths = ["pyref", "viz"]
 addopts = "-q"
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"

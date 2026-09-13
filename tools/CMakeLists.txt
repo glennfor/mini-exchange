@@ -30,3 +30,12 @@ target_link_libraries(flow_profile PRIVATE
 add_executable(tape_print tape_print.cpp)
 target_link_libraries(tape_print PRIVATE
   miniex_flags miniex::feed miniex::book miniex_tool_support)
+
+# Prints the tap layout as JSON, so the Python reader's idea of it can be
+# compared against the C++ header's. See viz/server/tests/test_layout.py.
+add_executable(tap_layout_dump tap_layout_dump.cpp)
+target_link_libraries(tap_layout_dump PRIVATE miniex_flags miniex::tap)
+
+add_executable(tap_producer tap_producer.cpp)
+target_link_libraries(tap_producer PRIVATE
+  miniex_flags miniex::tap miniex::book miniex::replay miniex_tool_support)

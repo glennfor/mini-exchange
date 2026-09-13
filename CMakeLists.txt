@@ -158,6 +158,7 @@ add_subdirectory(book)
 add_subdirectory(feed)
 add_subdirectory(engine)
 add_subdirectory(replay)
+add_subdirectory(viz)
 
 if(MINIEX_BUILD_TOOLS)
   add_subdirectory(tools)

@@ -40,16 +40,25 @@ void populate(Book& book, std::size_t orders, std::size_t levels,
 // --- add --------------------------------------------------------------------
 
 void BM_AddToEmptyLevel(benchmark::State& state) {
+  // Each add creates a brand-new price level, which is the expensive case:
+  // the level record is initialised and, in FastBook, a bitset bit is set.
+  //
+  // The book is cleared only when it gets large, not on every iteration:
+  // PauseTiming/ResumeTiming costs microseconds and would swamp a
+  // nanosecond-scale operation entirely. An earlier version of this file
+  // paused every iteration and reported 720 ns per add, essentially all of it
+  // harness.
+  constexpr std::size_t kBeforeClear = 1 << 16;
   NaiveBook book;
   OrderId id = 1;
   Price price = 1000000;
   for (auto _ : state) {
-    state.PauseTiming();
-    if (book.order_count() > 100000) {
+    if (book.order_count() >= kBeforeClear) {
+      state.PauseTiming();
       book.clear();
       price = 1000000;
+      state.ResumeTiming();
     }
-    state.ResumeTiming();
     bool added = book.add(id++, Side::Buy, price++, 100, 0, 0);
     benchmark::DoNotOptimize(added);
   }
@@ -69,35 +78,84 @@ void BM_AddToDeepLevel(benchmark::State& state) {
 
 // --- cancel -----------------------------------------------------------------
 //
-// Cancel gets three separate benchmarks because where the order sits in the
-// level's FIFO is the whole question: an implementation with an intrusive
-// doubly-linked list is O(1) wherever it is, and one that searches the level
-// is O(position). A single "cancel" number would hide exactly that.
+// Cancel gets three benchmarks because where the order sits in its level's
+// FIFO is the whole question: an intrusive doubly-linked list is O(1)
+// wherever it is, and an implementation that searches the level is
+// O(position). A single "cancel" number would hide exactly that.
+//
+// **On the harness.** The obvious way to write these -- rebuild the book
+// inside PauseTiming, cancel one order, resume -- measures Google Benchmark's
+// pause/resume, not the cancel. It costs microseconds; a cancel costs
+// nanoseconds. The first version of this file did that and reported 98 us per
+// cancel, a number that looks like a measurement and is entirely harness
+// overhead. Instead the book is refilled only when it empties, so the rebuild
+// is amortised over kOrders cancels and contributes under a thousandth of
+// each sample.
 
-void cancel_at_position(benchmark::State& state, double position_fraction) {
+enum class CancelPosition {
+  Head,
+  Middle,
+  Tail
+};
+
+void cancel_at_position(benchmark::State& state, CancelPosition where) {
   constexpr std::size_t kOrders = 4096;
+  NaiveBook book;
+  OrderId next = 1;
+  std::vector<OrderId> resting;
+  resting.reserve(kOrders);
+
+  const auto refill = [&] {
+    book.clear();
+    resting.clear();
+    for (std::size_t i = 0; i < kOrders; ++i) {
+      (void)book.add(next, Side::Buy, 1002000, 100, static_cast<TsNanos>(i), 0);
+      resting.push_back(next++);
+    }
+  };
+  refill();
+
+  std::size_t head = 0;
+  std::size_t tail = kOrders;
   for (auto _ : state) {
-    state.PauseTiming();
-    NaiveBook book;
-    populate(book, kOrders, 1);
-    const auto target = static_cast<OrderId>(
-        1 + static_cast<std::size_t>(position_fraction *
-                                     static_cast<double>(kOrders - 1)));
-    state.ResumeTiming();
-    bool cancelled = book.cancel(target);
+    if (head >= tail) {
+      state.PauseTiming();
+      refill();
+      head = 0;
+      tail = kOrders;
+      state.ResumeTiming();
+    }
+    std::size_t index = 0;
+    switch (where) {
+    case CancelPosition::Head: index = head++; break;
+    case CancelPosition::Tail: index = --tail; break;
+    case CancelPosition::Middle:
+      index = head + (tail - head) / 2;
+      // Consume from the ends so the midpoint keeps moving and the loop
+      // terminates; the cancelled order is always mid-queue.
+      if (index == head)
+        ++head;
+      else if (index + 1 == tail)
+        --tail;
+      else {
+        ++head;
+      }
+      break;
+    }
+    bool cancelled = book.cancel(resting[index]);
     benchmark::DoNotOptimize(cancelled);
   }
   state.SetItemsProcessed(state.iterations());
 }
 
 void BM_CancelHead(benchmark::State& state) {
-  cancel_at_position(state, 0.0);
+  cancel_at_position(state, CancelPosition::Head);
 }
 void BM_CancelMiddle(benchmark::State& state) {
-  cancel_at_position(state, 0.5);
+  cancel_at_position(state, CancelPosition::Middle);
 }
 void BM_CancelTail(benchmark::State& state) {
-  cancel_at_position(state, 1.0);
+  cancel_at_position(state, CancelPosition::Tail);
 }
 
 // --- matching ---------------------------------------------------------------
@@ -184,40 +242,47 @@ void BM_ReplaceCrossPrice(benchmark::State& state) {
 // --- best-price discovery ---------------------------------------------------
 //
 // The operation the hierarchical bitset exists for: after the touch empties,
-// find the next occupied level. With a wide, sparse book this is where a
-// scanning implementation falls over.
+// find the next occupied level. On a wide, sparse book a scanning
+// implementation is at its worst exactly when the book is thinnest.
+//
+// Same harness caution as the cancel benchmarks: the book is rebuilt only
+// when it empties, so the rebuild is amortised over kLevels samples.
 
-void best_after_touch_empties(benchmark::State& state, Price spacing) {
-  NaiveBook book;
-  for (std::size_t i = 0; i < 64; ++i) {
-    (void)book.add(static_cast<OrderId>(i + 1), Side::Buy,
-                   1002000 - static_cast<Price>(i) * spacing, 100,
-                   static_cast<TsNanos>(i), 0);
-  }
+template <class Book, class... BookArgs>
+void best_after_touch_empties(benchmark::State& state, Price spacing,
+                              BookArgs&&... book_args) {
+  constexpr std::size_t kLevels = 512;
+  Book book(std::forward<BookArgs>(book_args)...);
   OrderId next = 1;
-  for (auto _ : state) {
-    state.PauseTiming();
-    if (book.order_count() == 0) {
-      for (std::size_t i = 0; i < 64; ++i)
-        (void)book.add(static_cast<OrderId>(next++), Side::Buy,
-                       1002000 - static_cast<Price>(i) * spacing, 100, 0, 0);
+
+  const auto refill = [&] {
+    book.clear();
+    for (std::size_t i = 0; i < kLevels; ++i) {
+      (void)book.add(next++, Side::Buy,
+                     1002000 - static_cast<Price>(i) * spacing, 100,
+                     static_cast<TsNanos>(i), 0);
     }
-    const Price touch = book.best(Side::Buy);
-    state.ResumeTiming();
+  };
+  refill();
+
+  for (auto _ : state) {
+    if (book.order_count() == 0) {
+      state.PauseTiming();
+      refill();
+      state.ResumeTiming();
+    }
     (void)book.cancel(book.front(Side::Buy)->id);
     Price best = book.best(Side::Buy);
     benchmark::DoNotOptimize(best);
-    benchmark::ClobberMemory();
-    (void)touch;
   }
   state.SetItemsProcessed(state.iterations());
 }
 
-void BM_BestAfterTouchEmpties_Dense(benchmark::State& state) {
-  best_after_touch_empties(state, 1);
+void BM_BestAfterTouchEmpties_Naive_Dense(benchmark::State& state) {
+  best_after_touch_empties<NaiveBook>(state, 1);
 }
-void BM_BestAfterTouchEmpties_Sparse(benchmark::State& state) {
-  best_after_touch_empties(state, 1000);
+void BM_BestAfterTouchEmpties_Naive_Sparse(benchmark::State& state) {
+  best_after_touch_empties<NaiveBook>(state, 200);
 }
 
 // --- realistic mixed flow ---------------------------------------------------
@@ -274,24 +339,14 @@ void BM_MixedFlow_Fast_LadderOverflow(benchmark::State& state) {
   mixed_flow<FastBook>(state, FlowPattern::LadderOverflow, bench_ladder());
 }
 
-/// The operation the hierarchical bitset exists for, on the structure that
-/// actually uses it.
-void BM_FastBookBestAfterTouchEmpties(benchmark::State& state) {
-  FastBook book(bench_ladder());
-  OrderId next = 1;
-  for (auto _ : state) {
-    state.PauseTiming();
-    if (book.order_count() == 0) {
-      for (std::size_t i = 0; i < 64; ++i)
-        (void)book.add(next++, Side::Buy,
-                       1002000 - static_cast<Price>(i) * 1000, 100, 0, 0);
-    }
-    state.ResumeTiming();
-    (void)book.cancel(book.front(Side::Buy)->id);
-    Price best = book.best(Side::Buy);
-    benchmark::DoNotOptimize(best);
-  }
-  state.SetItemsProcessed(state.iterations());
+/// The same operation on the structure the bitset actually serves. The pair
+/// of dense and sparse numbers against NaiveBook's pair is the argument for
+/// bitset_ladder.hpp existing.
+void BM_BestAfterTouchEmpties_Fast_Dense(benchmark::State& state) {
+  best_after_touch_empties<FastBook>(state, 1, bench_ladder());
+}
+void BM_BestAfterTouchEmpties_Fast_Sparse(benchmark::State& state) {
+  best_after_touch_empties<FastBook>(state, 200, bench_ladder());
 }
 
 BENCHMARK(BM_AddToEmptyLevel);
@@ -303,9 +358,10 @@ BENCHMARK(BM_MatchOneLevel);
 BENCHMARK(BM_MatchTenLevels);
 BENCHMARK(BM_ReplaceSamePrice);
 BENCHMARK(BM_ReplaceCrossPrice);
-BENCHMARK(BM_BestAfterTouchEmpties_Dense);
-BENCHMARK(BM_BestAfterTouchEmpties_Sparse);
-BENCHMARK(BM_FastBookBestAfterTouchEmpties);
+BENCHMARK(BM_BestAfterTouchEmpties_Naive_Dense);
+BENCHMARK(BM_BestAfterTouchEmpties_Naive_Sparse);
+BENCHMARK(BM_BestAfterTouchEmpties_Fast_Dense);
+BENCHMARK(BM_BestAfterTouchEmpties_Fast_Sparse);
 BENCHMARK(BM_MixedFlow_Naive)->Unit(benchmark::kMillisecond);
 BENCHMARK(BM_MixedFlow_Fast)->Unit(benchmark::kMillisecond);
 BENCHMARK(BM_MixedFlow_Fast_LadderResident)->Unit(benchmark::kMillisecond);

@@ -647,3 +647,112 @@ real LOBSTER day, and `docs/validation.md` and the README both say which one
 has actually been run. Real data contains things a generator does not think to
 produce: odd lots, halts, auction imbalance, LULD bands, and one venue's
 sequencing quirks on one day. The generated pass is a necessary condition.
+
+---
+
+## DD-027 — The tap drops; it never back-pressures the engine
+
+**Context.** The observability ring can fill. Something has to give.
+
+**Choice.** The engine's write is one bounded store sequence. A full ring
+increments `dropped` and returns immediately. The engine never waits, never
+resizes, never checks whether anyone is listening.
+
+**Why.** The alternative — slowing the matching core so a dashboard can keep
+up — inverts the priorities of the entire system. The engine's latency is the
+product; the dashboard is a view of it. A dashboard that can perturb what it
+measures is not an instrument.
+
+**Consequence, and it is not free.** The drop count is part of the wire
+protocol and the UI renders it in red when non-zero. A silently-dropping
+dashboard that looks fine is worse than no dashboard: it shows a partial
+market and gives no indication that anything is missing.
+
+**Measured.** `AReaderThatDiesMidRunDoesNotPerturbTheProducer` times the
+producer with a live reader, then kills the reader and times it again over
+identical work. Development machine, 200,000 records: 14069 us with a live
+reader, 2426 us after the reader was killed. Losing the reader makes the
+producer *faster* (the writes become early-return drops), never slower, which
+is the property. The no-reader baseline is reported too but labelled as not
+comparable, because with nothing draining almost every write is a drop that
+never copies a record.
+
+---
+
+## DD-028 — The tap's cost is measured and published, not asserted
+
+**Context.** The obvious question about a dashboard attached to a latency-
+sensitive engine is whether it pollutes the numbers.
+
+**Choice.** `engine_bench` links `TapSink` when built with `MINIEX_TAP=ON`
+and `CountingSink` otherwise, and the two builds are otherwise identical. The
+difference between their published numbers is the tap's cost and nothing else.
+
+**Measured**, development machine, FastBook, 1M commands, service-time mode:
+
+| Build | Throughput | p99 |
+|---|---|---|
+| tap OFF | 4.27 M cmd/s | 416 ns |
+| tap ON (no reader attached) | 3.39 M cmd/s | 583 ns |
+
+So the tap costs about 20% of throughput on this machine. That is a real cost
+and it is stated rather than waved away; it is also why the tap is a
+compile-time option rather than a runtime flag, and why every published
+benchmark says which build produced it.
+
+If opening the segment fails, `engine_bench` **exits** rather than running
+with the tap silently off. A "tap ON" number produced with the tap not
+running would be the single most misleading thing the harness could print.
+
+---
+
+## DD-029 — A reader that falls behind skips forward rather than lagging
+
+**Context.** Python cannot drain a C++ matching engine running at a million
+commands a second. Measured on the development machine, the reader sustains
+roughly 250k events/s against 800k commands/s offered.
+
+**Choice.** When the backlog exceeds `--max-lag`, the reader jumps its tail
+forward to the newest records and counts what it skipped. The count is
+published alongside the engine's own drop count.
+
+**Why.** A reader that simply falls behind shows a *lagging replay while
+claiming to be live* — the worst of both. And the lag grows without bound
+until the engine's ring wraps, at which point the data is lost anyway and the
+reader is showing a torn view it does not know is torn. Skipping keeps the
+view current and makes the loss explicit.
+
+**Why not make the reader faster.** It could be: a C++ reader, or numpy over
+the mapped buffer, would both go considerably faster. But the coalescing means
+the browser can only absorb 30 snapshots a second regardless, so a faster
+reader would buy a smaller skip count and nothing a viewer could see. The
+honest fix for "the dashboard cannot show ten million events a second" is to
+stop pretending it can.
+
+---
+
+## DD-030 — The tap layout is checked across the language boundary
+
+**Context.** `viz/server/shm_reader.py` re-declares, in `struct` format
+strings, the binary layout that `viz/tap/include/viz/tap_layout.hpp` defines.
+
+**Choice.** `tools/tap_layout_dump` prints the C++ side's constants as JSON —
+including the offset of every field within a record — and
+`viz/server/tests/test_layout.py` compares them field by field.
+
+**Why this rather than generating one from the other.** Generation would be
+better if the two sides were maintained separately or shipped separately.
+They are not: both are built from this tree. What generation would actually
+buy is a build-time dependency from Python on a code generator, in exchange
+for removing a test that runs in milliseconds.
+
+What matters is that the check exists at all, because **a layout mismatch
+does not fail loudly**. The Python reader would unpack the wrong offsets and
+produce plausible numbers, and the dashboard would be confidently wrong. That
+is the worst possible failure mode for an observability tool, and it is worth
+a dedicated test.
+
+The magic constant is a case in point: it was first written as a hex literal
+in Python with one nibble wrong, and the symptom was "not a miniex tap
+segment" against a segment that plainly was one. It is now derived from the
+bytes of `"MINIEXTP"`, which cannot be mistyped.

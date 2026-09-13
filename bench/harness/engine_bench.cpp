@@ -63,11 +63,45 @@
 #include "latency.hpp"
 #include "tools/cli.hpp"
 
+#ifdef MINIEX_TAP
+#include "viz/tap_layout.hpp"
+#include "viz/tap_sink.hpp"
+#endif
+
 namespace {
 
 using namespace miniex;
 
 using Ring = SpscRing<Command, kRingCapacity>;
+
+// The sink the harness measures through.
+//
+// With MINIEX_TAP off this is CountingSink, which is two increments. With it
+// on, the same counters plus one bounded store into shared memory. The two
+// builds are otherwise identical, so the difference between their published
+// numbers is the tap's cost and nothing else -- which is the point of
+// comparison (2) in spec 18.6.
+#ifdef MINIEX_TAP
+struct BenchSink {
+  CountingSink counting;
+  TapSink tap;
+
+  void emit(const Event& e) noexcept {
+    counting.emit(e);
+    tap.emit(e);
+  }
+  [[nodiscard]] std::uint64_t total() const { return counting.total; }
+  [[nodiscard]] std::uint64_t drops() const { return tap.dropped(); }
+};
+#else
+struct BenchSink {
+  CountingSink counting;
+
+  void emit(const Event& e) noexcept { counting.emit(e); }
+  [[nodiscard]] std::uint64_t total() const { return counting.total; }
+  [[nodiscard]] static std::uint64_t drops() { return 0; }
+};
+#endif
 
 struct RunResult {
   LatencyHistogram histogram;
@@ -92,6 +126,26 @@ bool pin_to_core(int core) {
 #else
   (void)core;
   return false;
+#endif
+}
+
+/// Opens the shared-memory segment when the tap is compiled in. A failure is
+/// fatal for a tap build: a "tap ON" number produced with the tap silently
+/// not running would be the most misleading thing this harness could print.
+void configure_sink(BenchSink& sink) {
+#ifdef MINIEX_TAP
+  const std::string name = "/miniex_bench";
+  if (!sink.tap.open(name, kTapCapacity)) {
+    std::cerr << "engine_bench: cannot open the tap segment: "
+              << sink.tap.error() << "\n"
+              << "refusing to report a tap-ON number with the tap off\n";
+    std::exit(3);
+  }
+  std::cerr << "# tap segment " << name << " open, capacity " << kTapCapacity
+            << " records (" << (tap_segment_size(kTapCapacity) / (1024 * 1024))
+            << " MB)\n";
+#else
+  (void)sink;
 #endif
 }
 
@@ -123,9 +177,10 @@ void run_open_loop(const std::vector<Command>& commands,
 
   std::atomic<bool> engine_ready{false};
   std::atomic<std::uint64_t> processed{0};
-  CountingSink sink;
-  MatchingEngine<Book, CountingSink> engine(
-      sink, EngineConfig{}, std::forward<BookArgs>(book_args)...);
+  BenchSink sink;
+  configure_sink(sink);
+  MatchingEngine<Book, BenchSink> engine(sink, EngineConfig{},
+                                         std::forward<BookArgs>(book_args)...);
 
   std::thread engine_thread([&] {
     (void)pin_to_core(engine_core);
@@ -170,7 +225,8 @@ void run_open_loop(const std::vector<Command>& commands,
   const Cycles t1 = now_cycles();
 
   result.counters.commands = n;
-  result.counters.events = sink.total;
+  result.counters.events = sink.total();
+  result.counters.sink_drops = sink.drops();
   result.counters.trades = engine.stats().trades;
   result.counters.schedule_misses = misses;
   result.counters.ring_full_events = ring_full;
@@ -197,9 +253,10 @@ void run_closed_loop(const std::vector<Command>& commands,
   auto ring = std::make_unique<Ring>();
   std::atomic<std::uint64_t> done_count{0};
   std::atomic<bool> engine_ready{false};
-  CountingSink sink;
-  MatchingEngine<Book, CountingSink> engine(
-      sink, EngineConfig{}, std::forward<BookArgs>(book_args)...);
+  BenchSink sink;
+  configure_sink(sink);
+  MatchingEngine<Book, BenchSink> engine(sink, EngineConfig{},
+                                         std::forward<BookArgs>(book_args)...);
 
   std::thread engine_thread([&] {
     (void)pin_to_core(engine_core);
@@ -231,7 +288,8 @@ void run_closed_loop(const std::vector<Command>& commands,
   const Cycles t1 = now_cycles();
 
   result.counters.commands = n;
-  result.counters.events = sink.total;
+  result.counters.events = sink.total();
+  result.counters.sink_drops = sink.drops();
   result.counters.trades = engine.stats().trades;
   result.counters.wall_ns = cal.cycles_to_ns(t1 - t0);
   result.counters.achieved_rate =
@@ -439,7 +497,11 @@ int main(int argc, char** argv) {
   prov.timer_overhead_ns =
       cal.cycles_to_ns(CycleCalibration::measure_read_overhead());
   prov.book = book == "fast" ? "FastBook" : "NaiveBook";
+#ifdef MINIEX_TAP
+  prov.sink = "CountingSink+TapSink";
+#else
   prov.sink = "CountingSink";
+#endif
   prov.pattern = std::string(to_string(flow_cfg.pattern));
   prov.mix = mix_to_string(flow.config().mix);
   prov.seed = flow_cfg.seed;

@@ -8,6 +8,9 @@ target_include_directories(miniex_bench_support INTERFACE
 target_link_libraries(miniex_bench_support INTERFACE
   miniex_flags miniex::core miniex::engine miniex::book miniex::replay
   miniex_tool_support hdr_histogram_static Threads::Threads)
+if(MINIEX_TAP)
+  target_link_libraries(miniex_bench_support INTERFACE miniex::tap)
+endif()
 
 add_executable(engine_bench harness/engine_bench.cpp)
 target_link_libraries(engine_bench PRIVATE miniex_bench_support)

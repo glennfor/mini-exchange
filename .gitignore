@@ -96,3 +96,7 @@ timeout-*
 
 # Market data is downloaded by scripts/fetch_data.sh, never committed.
 data/
+
+# Only the gzipped sample recording is committed; regenerate the plain one
+# with `python -m viz.server.record_frames`.
+viz/server/sample_frames.jsonl
