@@ -67,3 +67,20 @@ vcpkg_installed/
 # test output & cache
 Testing/
 .cache/
+
+# Project-specific
+data/
+*.itch
+*.itch.gz
+*.csv.gz
+bench/results/raw/
+viz/ui/node_modules/
+viz/ui/dist/
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+perf.data*
+*.svg.tmp

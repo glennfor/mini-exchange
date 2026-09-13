@@ -1,0 +1,50 @@
+// Generated from cmake/config.hpp.in -- do not edit.
+//
+// Compile-time sizing for the engine. Every constant here is a CMake cache
+// variable (see cmake/MiniExchangeConfig.cmake) so benchmarks can sweep them
+// without touching source. The values baked into any published benchmark are
+// recorded by the provenance header that every tool prints to stderr.
+#pragma once
+
+#include <cstddef>
+#include <cstdint>
+
+#include "core/types.hpp"
+
+namespace miniex {
+
+/// Maximum number of simultaneously live orders the pool can hold.
+inline constexpr std::size_t kMaxOrders = @MINIEX_MAX_ORDERS@u;
+
+/// Width of the resident price-ladder window, in ticks. Prices outside the
+/// window fall back to the per-side overflow map (see book/fast_book.hpp).
+inline constexpr std::size_t kLadderTicks = @MINIEX_LADDER_TICKS@u;
+
+/// Tick size in Price units. 1 == 1e-4 dollars, the ITCH/LOBSTER convention.
+inline constexpr Price kTickSize = @MINIEX_TICK_SIZE@;
+
+/// Capacity of the ingress command ring.
+inline constexpr std::size_t kRingCapacity = @MINIEX_RING_CAPACITY@u;
+
+/// Capacity of the shared-memory observability ring.
+inline constexpr std::size_t kTapCapacity = @MINIEX_TAP_CAPACITY@u;
+
+/// Size of the bounded ring of recently-completed order ids, used to tell
+/// "already filled/cancelled" apart from "never existed" on a cancel.
+inline constexpr std::size_t kCompletedRingCapacity = @MINIEX_COMPLETED_RING@u;
+
+static_assert((kMaxOrders & (kMaxOrders - 1)) == 0,
+              "kMaxOrders must be a power of two");
+static_assert((kLadderTicks & (kLadderTicks - 1)) == 0,
+              "kLadderTicks must be a power of two");
+static_assert((kRingCapacity & (kRingCapacity - 1)) == 0,
+              "kRingCapacity must be a power of two");
+static_assert((kTapCapacity & (kTapCapacity - 1)) == 0,
+              "kTapCapacity must be a power of two");
+static_assert((kCompletedRingCapacity & (kCompletedRingCapacity - 1)) == 0,
+              "kCompletedRingCapacity must be a power of two");
+static_assert(kTickSize >= 1, "tick size must be a positive integer");
+static_assert(kMaxOrders < static_cast<std::size_t>(kInvalidIndex),
+              "pool indices must be able to address every order slot");
+
+}  // namespace miniex
