@@ -428,6 +428,15 @@ the code. The list is the most honest thing in this README.
     the symptom was "not a miniex tap segment" against a segment that plainly
     was one. It is now derived from the bytes of `"MINIEXTP"`.
 
+16. **The viz server died the moment a second browser tab connected.**
+    `Hub.broadcast` iterated the live client set while `await ws.send(...)`
+    was suspended, and the connection handler added the new client during
+    exactly that window — `RuntimeError: Set changed size during iteration`,
+    propagating out of the publisher task and taking the process with it. Not
+    caught by any test, because every test until then had a fixed set of
+    clients. It was found by running `./scripts/demo.sh` and opening the
+    dashboard, which is the one thing none of the automated tests do.
+
 ## What I would do next, in order
 
 1. **Run it on x86-64 Linux.** Everything needed is committed —

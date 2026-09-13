@@ -44,6 +44,20 @@ python -m viz.server.server --shm /miniex_demo --port 8765
 python -m viz.server.server --mock viz/server/sample_frames.jsonl.gz
 ```
 
+## Fan-out
+
+`Hub.broadcast` snapshots the client set before iterating it and sends to
+every client concurrently.
+
+Both matter. `ws.send()` suspends, and while it is suspended the connection
+handler runs — adding a client for a new tab, removing one for a closing tab.
+Iterating the live set across that await raises `Set changed size during
+iteration`, which propagates out of the publisher task and kills the server;
+the symptom was the process dying the moment a second tab was opened.
+Awaiting clients in turn is the milder version of the same mistake: the
+publish cycle then costs the *sum* of every client's send, so one tab that
+has stopped reading stalls the dashboard for all the others.
+
 ## Files
 
 | File | What |

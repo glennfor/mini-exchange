@@ -124,3 +124,74 @@ async def test_pause_stops_the_stream_and_step_advances_exactly_one_frame():
         "step must advance exactly one frame -- this is the button that saves "
         "hours of debugging, and it is worthless if it advances two"
     )
+
+
+@pytest.mark.asyncio
+async def test_a_client_connecting_mid_broadcast_does_not_kill_the_server():
+    """The crash this reproduces killed the whole server.
+
+    `await ws.send(...)` suspends, and while it is suspended the connection
+    handler runs -- `hub.add()` for a new browser tab, or `hub.remove()` in
+    its `finally` for a closing one. Iterating the live set across that await
+    raises `RuntimeError: Set changed size during iteration`, which propagates
+    out of the publisher task and takes the process with it.
+
+    Symptom in the field: the server died the moment a second tab was opened.
+    """
+    hub = Hub()
+
+    class ConnectsAnother(FakeSocket):
+        async def send(self, payload: str) -> None:
+            # Exactly what the real handler does while a broadcast is
+            # suspended on this very send.
+            hub.add(FakeSocket())
+            await super().send(payload)
+
+    hub.add(ConnectsAnother())
+    await hub.broadcast(protocol.error("tick"))
+    assert hub.count == 2
+
+
+@pytest.mark.asyncio
+async def test_a_client_disconnecting_mid_broadcast_does_not_kill_the_server():
+    hub = Hub()
+    victim = FakeSocket()
+
+    class DisconnectsAnother(FakeSocket):
+        async def send(self, payload: str) -> None:
+            hub.remove(victim)
+            await super().send(payload)
+
+    hub.add(DisconnectsAnother())
+    hub.add(victim)
+    await hub.broadcast(protocol.error("tick"))
+    assert hub.count == 1
+
+
+@pytest.mark.asyncio
+async def test_one_stalled_client_does_not_delay_the_others():
+    """A dashboard tab that stops reading must not hold up every other tab.
+
+    Sends go out concurrently, so the publish cycle costs the slowest client
+    once rather than the sum of all of them.
+    """
+    hub = Hub()
+    fast = FakeSocket()
+
+    class Slow(FakeSocket):
+        async def send(self, payload: str) -> None:
+            await asyncio.sleep(0.05)
+            await super().send(payload)
+
+    hub.add(Slow())
+    hub.add(fast)
+
+    start = asyncio.get_running_loop().time()
+    await hub.broadcast(protocol.error("tick"))
+    elapsed = asyncio.get_running_loop().time() - start
+
+    assert len(fast.sent) == 1
+    assert elapsed < 0.09, (
+        "two clients, one of them 50 ms slow: concurrent sends cost ~50 ms, "
+        f"serial sends cost ~100 ms; measured {elapsed*1000:.0f} ms"
+    )

@@ -64,17 +64,37 @@ class Hub:
         return len(self._clients)
 
     async def broadcast(self, frame: dict[str, Any]) -> None:
-        if not self._clients:
+        """Sends one frame to every client.
+
+        Two things this has to get right, both of which it got wrong first.
+
+        **Snapshot the client set.** `ws.send()` suspends, and while it is
+        suspended the connection handler runs -- `add()` for a new browser
+        tab, `remove()` in its `finally` for a closing one. Iterating the live
+        set across that await raises `RuntimeError: Set changed size during
+        iteration`, which propagates out of the publisher task and kills the
+        server. The symptom was the process dying the moment a second tab was
+        opened.
+
+        **Send concurrently.** Awaiting each client in turn makes the publish
+        cycle cost the *sum* of every client's send, so one tab that has
+        stopped reading stalls the dashboard for everyone else. Gathering
+        makes it cost the slowest one instead. Frames stay ordered per client
+        because the gather completes before the next broadcast starts.
+        """
+        clients = tuple(self._clients)
+        if not clients:
             return
         payload = json.dumps(frame, separators=(",", ":"))
-        dead = []
-        for ws in self._clients:
-            try:
-                await ws.send(payload)
-            except Exception:  # a failed send means the client is gone
-                dead.append(ws)
-        for ws in dead:
-            self._clients.discard(ws)
+        results = await asyncio.gather(
+            *(ws.send(payload) for ws in clients), return_exceptions=True
+        )
+        for ws, result in zip(clients, results, strict=True):
+            # A failed send means the client is gone. Discard rather than
+            # remove: it may already have been dropped by its own handler
+            # while this broadcast was in flight.
+            if isinstance(result, BaseException):
+                self._clients.discard(ws)
 
 
 class TapPublisher:
