@@ -75,13 +75,14 @@ def test_trades_are_batched_for_the_tape_and_set_the_last_trade():
     book.apply(rec(0, EVENT_ACK, 1, 1002400, 500, side=1))
     book.apply(rec(1, EVENT_TRADE, 2, 1002400, 100, side=0, counter_id=1))
 
-    trades = book.take_trades()
+    trades, elided = book.take_trades()
     assert len(trades) == 1
     assert trades[0]["price"] == 1002400
     assert trades[0]["aggressor"] == "B"
     assert trades[0]["resting_id"] == 1
     assert book.last_trade == {"price": 1002400, "qty": 100, "side": "B"}
-    assert book.take_trades() == [], "taking must drain the batch"
+    assert elided == 0
+    assert book.take_trades() == ([], 0), "taking must drain the batch"
 
 
 def test_replace_moves_quantity_between_levels():
@@ -173,3 +174,16 @@ def test_an_empty_side_is_not_a_crossed_book():
     book = BookState()
     book.apply(rec(0, EVENT_ACK, 1, 1002100, 100, side=0))
     assert not book.crossed
+
+
+def test_a_burst_of_prints_is_capped_and_the_loss_is_reported():
+    # The tape renders a few hundred rows. At 200k events/s a publish interval
+    # can hold thousands of prints, and a frame of them crossed a megabyte on
+    # the wire -- work done so the browser could throw it away.
+    book = BookState()
+    for i in range(5000):
+        book.apply(rec(i, EVENT_TRADE, 1, 1002100 + i, 100, side=0))
+    items, elided = book.take_trades(512)
+    assert len(items) == 512
+    assert elided == 4488
+    assert items[-1]["price"] == 1002100 + 4999, "the newest must survive"

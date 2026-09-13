@@ -26,6 +26,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --mock) MOCK=1 ;;
     --rate) RATE="$2"; shift ;;
+    --shm) SHM="$2"; shift ;;
     --ui-port) UI_PORT="$2"; shift ;;
     --ws-port) WS_PORT="$2"; shift ;;
     -h|--help)
@@ -36,6 +37,7 @@ demo.sh -- one command, a working demo.
   ./scripts/demo.sh --mock     replay the committed recording; no C++ build,
                                no market data
   ./scripts/demo.sh --rate N   commands per second the engine emits
+  ./scripts/demo.sh --shm NAME shared-memory segment (one demo per segment)
   ./scripts/demo.sh --ui-port N --ws-port N
 USAGE
       exit 0
@@ -79,6 +81,16 @@ done
 say() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 
 if [ "$MOCK" -eq 0 ]; then
+  # The tap is a single-producer ring. A second engine writing the same
+  # segment interleaves its events with the first one's, and what the server
+  # reconstructs from that is not a book -- it was minutes of debugging a
+  # crossed market that only ever existed because two demos were running.
+  if pgrep -f "tap_producer .*--shm $SHM( |$)" > /dev/null 2>&1; then
+    echo "an engine is already writing $SHM. The tap has one producer;" >&2
+    echo "stop it, or pass --shm with a different name." >&2
+    exit 2
+  fi
+
   say "building the engine with the tap compiled in"
   cmake --preset release-tap > /dev/null
   cmake --build build/release-tap --target tap_producer
@@ -111,10 +123,19 @@ fi
 PIDS+=($!)
 sleep 3
 
+# The UI defaults to ws://<host>:8765 and takes an override in the query
+# string. Printing the bare UI address for a demo on a different ws port sent
+# the browser to whatever was on 8765 instead -- which, with an older server
+# still running there, looks exactly like the new one and is not.
+OPEN_URL="http://127.0.0.1:$UI_PORT"
+if [ "$WS_PORT" != "8765" ]; then
+  OPEN_URL="$OPEN_URL/?ws=ws://127.0.0.1:$WS_PORT"
+fi
+
 cat <<NOTE
 
 ================================================================
-  Open http://127.0.0.1:$UI_PORT
+  Open $OPEN_URL
 
   Things to try, in order:
 

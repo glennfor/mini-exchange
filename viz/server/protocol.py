@@ -74,9 +74,20 @@ def book(
     }
 
 
-def trades(items: list[dict[str, Any]]) -> dict[str, Any]:
-    """Trades since the previous book frame, batched."""
-    return {"v": SCHEMA_VERSION, "type": TRADES, "items": items}
+def trades(items: list[dict[str, Any]], elided: int = 0) -> dict[str, Any]:
+    """Trades since the previous book frame, batched.
+
+    `elided` is how many prints were dropped to bound the frame. The tape
+    shows a few hundred rows, so sending thousands is work thrown away -- but
+    the count goes with them, because a tape that silently omits prints is a
+    tape you cannot trust for the ones it does show.
+    """
+    return {
+        "v": SCHEMA_VERSION,
+        "type": TRADES,
+        "items": items,
+        "elided": elided,
+    }
 
 
 def trade_item(

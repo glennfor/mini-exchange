@@ -7,11 +7,16 @@
  * The aggressor side is shown by a *letter* as well as a colour -- `B` or `S`
  * in its own column -- so the panel is readable without colour vision, which
  * is the rule for every panel here.
+ *
+ * At full rate the engine prints far more than 500 trades a second, so the
+ * server caps what it sends and says how many it dropped. That count is in
+ * the header: this is a sample of the tape, and a tape that does not admit
+ * that is one you cannot trust for the prints it does show.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import { formatPrice, formatTime, type TradeItem } from '../protocol';
+import { formatCount, formatPrice, formatTime, type TradeItem } from '../protocol';
 
 const ROW_HEIGHT = 16;
 const OVERSCAN = 6;
@@ -19,10 +24,11 @@ const MAX_ROWS = 500;
 
 interface Props {
   trades: React.MutableRefObject<TradeItem[]>;
+  elided: React.MutableRefObject<number>;
   revision: React.MutableRefObject<number>;
 }
 
-export function Tape({ trades, revision }: Props) {
+export function Tape({ trades, elided, revision }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(0);
@@ -68,6 +74,11 @@ export function Tape({ trades, revision }: Props) {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
+      {elided.current > 0 && (
+        <div className="shrink-0 truncate px-2 py-[1px] text-[9px] text-accent">
+          sample &middot; {formatCount(elided.current)} prints not shown
+        </div>
+      )}
       <div className="grid shrink-0 grid-cols-[86px_1fr_70px_28px] gap-2 border-b border-ink-600 px-2 py-[2px] text-[9px] uppercase tracking-widest text-muted">
         <span>time</span>
         <span className="text-right">price</span>

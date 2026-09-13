@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import gzip
 import json
 import sys
@@ -50,8 +51,15 @@ def load_frames(path: str) -> list[dict[str, Any]]:
 class Hub:
     """Fans published frames out to every connected client."""
 
-    def __init__(self) -> None:
+    #: How long one client may take to accept a frame before it is dropped.
+    #: Several publish intervals, so an ordinary hiccup is tolerated and a
+    #: stopped consumer is not.
+    SEND_TIMEOUT_S = 0.5
+
+    def __init__(self, send_timeout: float = SEND_TIMEOUT_S) -> None:
         self._clients: set[Any] = set()
+        self.send_timeout = send_timeout
+        self.dropped_slow = 0
 
     def add(self, ws: Any) -> None:
         self._clients.add(ws)
@@ -62,6 +70,22 @@ class Hub:
     @property
     def count(self) -> int:
         return len(self._clients)
+
+    async def _send(self, ws: Any, payload: str) -> None:
+        """One send, with a deadline.
+
+        A timeout cancels the send part way through a frame, so the client's
+        stream is no longer coherent and the connection has to go. It is
+        closed rather than merely forgotten, or the socket would sit in the
+        event loop holding a buffer nobody will ever read.
+        """
+        try:
+            await asyncio.wait_for(ws.send(payload), self.send_timeout)
+        except asyncio.TimeoutError:
+            self.dropped_slow += 1
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(ws.close(), 0.1)
+            raise
 
     async def broadcast(self, frame: dict[str, Any]) -> None:
         """Sends one frame to every client.
@@ -81,13 +105,26 @@ class Hub:
         stopped reading stalls the dashboard for everyone else. Gathering
         makes it cost the slowest one instead. Frames stay ordered per client
         because the gather completes before the next broadcast starts.
+
+        **Bound the wait.** Gathering costs the slowest client, and "slowest"
+        has no upper bound: a tab Chrome has backgrounded stops draining its
+        socket entirely, TCP flow control backs the send up, and the publish
+        loop waits on it for ever. Every other tab, and the stats frames with
+        it, stop dead -- which looked exactly like a hung server and was one
+        stalled consumer. The suite had a test for this that only covered a
+        client that was *slow*, not one that had *stopped*, so it passed.
+
+        A market feed does not wait for a subscriber. A client that cannot
+        take a frame within several publish intervals is dropped, the same
+        way the engine's tap drops rather than stalling matching.
         """
         clients = tuple(self._clients)
         if not clients:
             return
         payload = json.dumps(frame, separators=(",", ":"))
         results = await asyncio.gather(
-            *(ws.send(payload) for ws in clients), return_exceptions=True
+            *(self._send(ws, payload) for ws in clients),
+            return_exceptions=True,
         )
         for ws, result in zip(clients, results, strict=True):
             # A failed send means the client is gone. Discard rather than
@@ -110,6 +147,10 @@ class TapPublisher:
         publish_hz: int = 30,
         batch: int = 32768,
         max_lag: int = 200000,
+        chunk: int = 2048,
+        drain_share: float = 0.6,
+        crossed_limit: int = 30,
+        max_trades_per_frame: int = 512,
     ) -> None:
         self.reader = reader
         self.hub = hub
@@ -118,10 +159,16 @@ class TapPublisher:
         self.publish_hz = publish_hz
         self.batch = batch
         self.max_lag = max_lag
+        self.chunk = chunk
+        self.drain_share = drain_share
+        self.crossed_limit = crossed_limit
+        self.max_trades_per_frame = max_trades_per_frame
         self.skipped = 0
         self._drops_seen = reader.dropped
         self.book = BookState()
         self._last_published_seq: int | None = None
+        self._crossed_cycles = 0
+        self._last_frame: dict[str, Any] | None = None
         self.transport = protocol.TransportState()
         self._last_stats = 0.0
         self._events_at_last_stats = 0
@@ -131,17 +178,29 @@ class TapPublisher:
         interval = 1.0 / self.publish_hz
         while True:
             start = time.monotonic()
-            self._drain()
+            self._drain(deadline=start + interval * self.drain_share)
             await self._publish()
             elapsed = time.monotonic() - start
             await asyncio.sleep(max(0.0, interval - elapsed))
 
-    def _drain(self) -> None:
-        """Applies as many records as are waiting, up to a bounded batch.
+    def _drain(self, deadline: float | None = None) -> None:
+        """Applies what is waiting, bounded by a record count *and* a clock.
 
-        Bounded so that one slow publish cycle cannot turn into an unbounded
-        one: falling behind is survivable (the engine drops), spending a
-        second inside one iteration is not, because the UI would freeze.
+        The record bound alone was not enough, and the way it failed is worth
+        keeping. Unpacking and applying one tap record costs about 2.5 us in
+        Python, so a full 32768-record batch costs 80 ms -- against a 33 ms
+        publish interval. Once the reader was far enough behind to fill a
+        batch every cycle it stayed there: every cycle overran, the publish
+        rate fell to a few hertz, and the heatmap, which draws one column per
+        published frame, showed five columns in thirty seconds while the
+        engine ran at full speed. The dashboard looked broken while every
+        component in it was working.
+
+        The clock bound breaks that. Draining stops when the cycle's share of
+        the interval is spent, so publishing keeps its cadence, and because
+        the drain rate that fits in that share (~240k records/s) exceeds what
+        the engine produces, the reader catches up instead of settling into
+        the overrun.
         """
         if self.transport.state == "paused" and self.transport.pending_steps <= 0:
             return
@@ -170,22 +229,43 @@ class TapPublisher:
         if gap:
             self.book.resync()
 
-        records = self.reader.read(budget)
-        for record in records:
-            self.book.apply(record)
-            self.transport.event_index = record.seq
+        # Read in chunks so the deadline can be honoured part way through a
+        # batch rather than only between batches.
+        applied = 0
+        while applied < budget:
+            chunk = min(self.chunk, budget - applied)
+            records = self.reader.read(chunk)
+            if not records:
+                break
+            for record in records:
+                self.book.apply(record)
+            self.transport.event_index = records[-1].seq
+            applied += len(records)
+            if len(records) < chunk:
+                break  # caught up
+            if deadline is not None and time.monotonic() >= deadline:
+                break
         if self.transport.pending_steps > 0:
-            self.transport.pending_steps -= len(records)
+            self.transport.pending_steps -= applied
 
-    def book_frame(self) -> dict[str, Any]:
+    def book_frame(self) -> dict[str, Any] | None:
         """The current depth snapshot. Sent to a client the moment it
         connects, so a client that joins while the transport is paused sees
-        the book rather than an empty screen."""
-        bids, asks = self.book.depth(self.levels)
-        return protocol.book(
-            self.book.t_ns, self.symbol, self.book.seq, bids, asks,
-            self.book.last_trade,
+        the book rather than an empty screen.
+
+        Returns the last coherent snapshot while the reconstruction is
+        mid-command -- see `_publish` for why that happens. Going straight to
+        `depth()` here was the one path that could still hand a client a
+        crossed book, because it is the one snapshot the publish loop does not
+        produce: it goes out from the connection handler, on connect.
+        """
+        if self.book.crossed:
+            return self._last_frame
+        self._last_frame = protocol.book(
+            self.book.t_ns, self.symbol, self.book.seq,
+            *self.book.depth(self.levels), self.book.last_trade,
         )
+        return self._last_frame
 
     async def _publish(self) -> None:
         if self.hub.count == 0:
@@ -202,13 +282,37 @@ class TapPublisher:
         # right -- straight horizontal lines, as if the market had frozen at
         # a price rather than stopped. Pausing must stop the chart, not feed
         # it copies.
-        if self.book.seq != self._last_published_seq:
-            self._last_published_seq = self.book.seq
-            await self.hub.broadcast(self.book_frame())
+        #
+        # And never publish a crossed book.
+        #
+        # The engine emits an order's Ack before it matches it, so between
+        # that Ack and the trades that follow, this reconstruction has the
+        # aggressor resting at a price that crosses the other side. It is a
+        # real intermediate state of the *event stream*, but it is not a state
+        # the engine's book was ever in, and a drain that stops inside that
+        # window -- which a deadline-bounded drain sometimes does -- would
+        # publish it. Measured at about one frame in twenty-five.
+        #
+        # Holding the frame back costs at most one publish interval, because
+        # the next drain finishes the command. If it does not clear, the cause
+        # is not a half-applied command but lost events, and the only repair
+        # for that is to rebuild.
+        if self.book.crossed:
+            self._crossed_cycles += 1
+            if self._crossed_cycles >= self.crossed_limit:
+                self.book.resync()
+                self._crossed_cycles = 0
+        else:
+            self._crossed_cycles = 0
+            if self.book.seq != self._last_published_seq:
+                self._last_published_seq = self.book.seq
+                await self.hub.broadcast(self.book_frame())
 
-            trades = self.book.take_trades()
-            if trades:
-                await self.hub.broadcast(protocol.trades(trades))
+                items, elided = self.book.take_trades(
+                    self.max_trades_per_frame
+                )
+                if items:
+                    await self.hub.broadcast(protocol.trades(items, elided))
 
         now = time.monotonic()
         if now - self._last_stats >= 1.0:

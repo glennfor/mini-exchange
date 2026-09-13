@@ -227,6 +227,7 @@ describe('the dashboard', () => {
           { t_ns: 1_000, price: 1002100, qty: 100, aggressor: 'B', resting_id: 1 },
           { t_ns: 2_000, price: 1002200, qty: 250, aggressor: 'S', resting_id: 2 },
         ],
+        elided: 0,
       });
       ws.deliver({
         v: 1, type: 'book', t_ns: 2_000, symbol: 'X', seq: 1,
@@ -292,5 +293,31 @@ describe('the dashboard', () => {
     // Three malformed frames in, three counted.
     const counter = screen.getByText('bad frames').nextElementSibling;
     expect(counter?.textContent).toContain('3');
+  });
+
+  it('says when the tape is a sample rather than the whole tape', async () => {
+    // At full rate the engine prints far more than the tape holds, so the
+    // server caps what it sends. A tape that does not admit that is one you
+    // cannot trust for the prints it does show.
+    render(<App />);
+    await settle();
+    const ws = FakeWebSocket.live[0]!;
+    await act(async () => {
+      ws.open();
+      ws.deliver({
+        v: 1,
+        type: 'trades',
+        items: [
+          { t_ns: 1_000, price: 1002100, qty: 100, aggressor: 'B', resting_id: 1 },
+        ],
+        elided: 4_488,
+      });
+      ws.deliver({
+        v: 1, type: 'book', t_ns: 2_000, symbol: 'X', seq: 9,
+        bids: [[1002100, 100, 1]], asks: [[1002400, 100, 1]], last_trade: null,
+      });
+    });
+    await settle(60);
+    expect(screen.getByText(/4.5k prints not shown/)).toBeTruthy();
   });
 });

@@ -47,6 +47,15 @@ export interface TradesFrame {
   v: number;
   type: 'trades';
   items: TradeItem[];
+  /**
+   * Prints the server dropped to bound the frame.
+   *
+   * The tape renders a few hundred rows, so sending every print in a publish
+   * interval is work done to be thrown away -- at full rate a frame of them
+   * crossed a megabyte. The count comes with them, because a tape that
+   * silently omits prints is one you cannot trust for the ones it shows.
+   */
+  elided: number;
 }
 
 export interface StatsFrame {
@@ -158,7 +167,9 @@ export function parseFrame(raw: unknown): Frame | null {
         ? (f as unknown as BookFrame)
         : null;
     case 'trades':
-      return Array.isArray(f.items) && f.items.every(isTradeItem)
+      return Array.isArray(f.items) &&
+        f.items.every(isTradeItem) &&
+        isNumber(f.elided)
         ? (f as unknown as TradesFrame)
         : null;
     case 'stats':

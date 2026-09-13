@@ -80,7 +80,11 @@ export default function App() {
         <section className="panel">
           <h2 className="panel-title">Tape</h2>
           <div className="min-h-0 flex-1">
-            <Tape trades={socket.trades} revision={socket.revision} />
+            <Tape
+              trades={socket.trades}
+              elided={socket.tradesElided}
+              revision={socket.revision}
+            />
           </div>
         </section>
         <section className="panel">

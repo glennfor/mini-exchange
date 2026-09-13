@@ -176,10 +176,24 @@ class BookState:
             [[price, lvl.qty, lvl.orders] for price, lvl in asks],
         )
 
-    def take_trades(self) -> list[dict[str, int | str]]:
+    def take_trades(
+        self, limit: int | None = None
+    ) -> tuple[list[dict[str, int | str]], int]:
+        """The trades since the last call, newest-last, and how many were
+        dropped to stay under `limit`.
+
+        The tape renders the most recent few hundred prints and nothing else,
+        so sending every trade in a publish interval is work done to be thrown
+        away: at 200k events/s one interval can hold thousands, and a frame of
+        them crossed a megabyte on the wire. What is dropped is reported
+        rather than quietly omitted -- the tape is a sample of the tape, and
+        the panel says so.
+        """
         out = self.pending_trades
         self.pending_trades = []
-        return out
+        if limit is None or len(out) <= limit:
+            return out, 0
+        return out[-limit:], len(out) - limit
 
     @property
     def orders_resting(self) -> int:

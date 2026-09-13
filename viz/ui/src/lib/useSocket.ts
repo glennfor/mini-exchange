@@ -41,6 +41,8 @@ export interface SocketData {
   book: React.MutableRefObject<BookFrame | null>;
   /** Newest-first, capped. */
   trades: React.MutableRefObject<TradeItem[]>;
+  /** Prints the server dropped to bound the frames it sent. */
+  tradesElided: React.MutableRefObject<number>;
   /** Bumped whenever a book frame lands, so canvases know to redraw. */
   revision: React.MutableRefObject<number>;
   hello: HelloFrame | null;
@@ -58,6 +60,7 @@ const BACKOFF_MS = [250, 500, 1000, 2000, 4000, 8000];
 export function useSocket(url: string): SocketData {
   const book = useRef<BookFrame | null>(null);
   const trades = useRef<TradeItem[]>([]);
+  const tradesElided = useRef(0);
   const revision = useRef(0);
   const socket = useRef<WebSocket | null>(null);
   const attempt = useRef(0);
@@ -133,6 +136,7 @@ export function useSocket(url: string): SocketData {
             ...frame.items.slice().reverse(),
             ...trades.current,
           ].slice(0, MAX_TAPE);
+          tradesElided.current += frame.elided;
           break;
         case 'stats':
           setStats(frame);
@@ -185,6 +189,7 @@ export function useSocket(url: string): SocketData {
   return {
     book,
     trades,
+    tradesElided,
     revision,
     hello,
     stats,

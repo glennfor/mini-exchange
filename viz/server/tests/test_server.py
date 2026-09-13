@@ -9,13 +9,19 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import time
 from pathlib import Path
 
 import pytest
 
 from viz.server import protocol
 from viz.server.server import Hub, MockPublisher, TapPublisher, load_frames
-from viz.server.shm_reader import EVENT_ACK, EVENT_CANCELLED, TapRecord
+from viz.server.shm_reader import (
+    EVENT_ACK,
+    EVENT_CANCELLED,
+    EVENT_FILL,
+    TapRecord,
+)
 
 websockets = pytest.importorskip("websockets")
 
@@ -170,8 +176,8 @@ async def test_a_client_disconnecting_mid_broadcast_does_not_kill_the_server():
 
 
 @pytest.mark.asyncio
-async def test_one_stalled_client_does_not_delay_the_others():
-    """A dashboard tab that stops reading must not hold up every other tab.
+async def test_one_slow_client_does_not_delay_the_others():
+    """A dashboard tab that reads slowly must not hold up every other tab.
 
     Sends go out concurrently, so the publish cycle costs the slowest client
     once rather than the sum of all of them.
@@ -258,17 +264,25 @@ def test_a_publisher_exposes_its_current_book_for_a_client_joining_paused():
 class FakeReader:
     """A tap that can be told to lose events, so the gap path is testable."""
 
-    def __init__(self) -> None:
+    def __init__(self, cost_per_record: float = 0.0) -> None:
         self.queue: list[TapRecord] = []
         self.dropped = 0
         self.lag = 0
+        self.cost_per_record = cost_per_record
 
     def read(self, budget: int) -> list[TapRecord]:
         out, self.queue = self.queue[:budget], self.queue[budget:]
+        if self.cost_per_record and out:
+            deadline = time.monotonic() + self.cost_per_record * len(out)
+            while time.monotonic() < deadline:
+                pass
         return out
 
     def skip_to_recent(self, keep: int) -> int:
         return 0
+
+    def read_stats(self):
+        return None
 
 
 def _record(seq, etype, order_id, price, qty, side):
@@ -336,3 +350,194 @@ def test_a_reader_that_starts_behind_does_not_count_as_a_gap():
     reader.queue = [_record(1, EVENT_ACK, 1, 1002000, 500, 0)]
     publisher._drain()
     assert publisher.book.resyncs == 0
+
+
+def test_draining_stops_at_the_deadline_so_publishing_keeps_its_cadence():
+    """The failure: five heatmap columns in thirty seconds.
+
+    A tap record costs about 2.5 us to unpack and apply in Python, so a full
+    32768-record batch costs 80 ms against a 33 ms publish interval. Once the
+    reader was behind enough to fill a batch every cycle it stayed there --
+    every cycle overran, the publish rate collapsed to a few hertz, and the
+    heatmap (one column per published frame) went nearly blank while the
+    engine ran at full speed and every component worked as designed.
+    """
+    reader = FakeReader(cost_per_record=20e-6)
+    publisher = TapPublisher(reader, Hub())
+    reader.queue = [
+        _record(i, EVENT_ACK, i, 1002000 + (i % 7), 100, i % 2)
+        for i in range(20_000)
+    ]
+
+    start = time.monotonic()
+    publisher._drain(deadline=start + 0.02)
+    elapsed = time.monotonic() - start
+
+    assert elapsed < 0.05, (
+        f"drained for {elapsed*1000:.0f} ms against a 20 ms deadline; the "
+        "publish loop cannot keep 30 Hz if one drain eats several intervals"
+    )
+    assert publisher.book.events_applied > 0, "it must still make progress"
+    assert reader.queue, "and it must have stopped early, not finished"
+
+
+def test_a_drain_with_no_deadline_still_respects_the_record_budget():
+    reader = FakeReader()
+    publisher = TapPublisher(reader, Hub(), batch=100)
+    reader.queue = [
+        _record(i, EVENT_ACK, i, 1002000, 100, 0) for i in range(1000)
+    ]
+    publisher._drain()
+    assert publisher.book.events_applied == 100
+
+
+def test_a_half_applied_command_is_held_back_rather_than_drawn():
+    """The engine Acks an order before it matches it.
+
+    Between that Ack and the trades that follow, this server's reconstruction
+    has the aggressor resting at a price that crosses the other side. It is a
+    real state of the event stream and not a state the engine's book was ever
+    in -- and a deadline-bounded drain stops inside that window often enough
+    to matter: one published frame in twenty-five, measured against the live
+    engine, showed a locked or crossed market.
+    """
+    hub = Hub()
+    client = FakeSocket()
+    hub.add(client)
+    reader = FakeReader()
+    publisher = TapPublisher(reader, hub)
+
+    reader.queue = [_record(1, EVENT_ACK, 1, 1002000, 500, 1)]  # an ask
+    publisher._drain()
+    asyncio.run(publisher._publish())
+    published = [f for f in client.sent if f["type"] == "book"]
+    assert len(published) == 1
+
+    # A bid arrives that crosses it. Its Ack lands; its trades have not been
+    # drained yet.
+    reader.queue = [_record(2, EVENT_ACK, 2, 1002050, 500, 0)]
+    publisher._drain()
+    asyncio.run(publisher._publish())
+    assert publisher.book.crossed
+    assert [f for f in client.sent if f["type"] == "book"] == published, (
+        "a crossed book must not be published; the next cycle will finish "
+        "the command"
+    )
+
+    # The rest of the command arrives and the frame goes out.
+    reader.queue = [_record(3, EVENT_FILL, 2, 1002050, 500, 0)]
+    publisher._drain()
+    asyncio.run(publisher._publish())
+    assert not publisher.book.crossed
+    assert len([f for f in client.sent if f["type"] == "book"]) == 2
+
+
+def test_a_crossing_that_does_not_clear_is_treated_as_lost_events():
+    # Otherwise holding the frame back would freeze the display for ever on
+    # the one failure it cannot fix by waiting.
+    hub = Hub()
+    hub.add(FakeSocket())
+    reader = FakeReader()
+    publisher = TapPublisher(reader, hub, crossed_limit=3)
+    reader.queue = [
+        _record(1, EVENT_ACK, 1, 1002000, 500, 1),
+        _record(2, EVENT_ACK, 2, 1002050, 500, 0),
+    ]
+    publisher._drain()
+    for _ in range(3):
+        asyncio.run(publisher._publish())
+    assert publisher.book.resyncs == 1
+    assert not publisher.book.crossed
+
+
+@pytest.mark.asyncio
+async def test_a_client_that_has_stopped_reading_is_dropped_not_waited_for():
+    """The hang this closes looked exactly like a dead server.
+
+    Gathering the sends costs the slowest client, and "slowest" has no upper
+    bound: a tab Chrome has backgrounded stops draining its socket, TCP flow
+    control backs the send up, and the publish loop waits on it for ever.
+    Every other tab stops, the once-a-second stats stop, and the process sits
+    there at 50% CPU draining the tap and publishing to nobody.
+
+    The test above covered a client that was *slow*. This one covers a client
+    that has *stopped*, which is the case that actually happened.
+    """
+    hub = Hub(send_timeout=0.05)
+    healthy = FakeSocket()
+
+    class Stopped(FakeSocket):
+        closed = False
+
+        async def send(self, payload: str) -> None:
+            await asyncio.Event().wait()  # never completes
+
+        async def close(self) -> None:
+            self.closed = True
+
+    stopped = Stopped()
+    hub.add(stopped)
+    hub.add(healthy)
+
+    start = asyncio.get_running_loop().time()
+    await hub.broadcast(protocol.error("tick"))
+    elapsed = asyncio.get_running_loop().time() - start
+
+    assert len(healthy.sent) == 1, "the healthy client must still get its frame"
+    assert elapsed < 0.5, (
+        f"broadcast took {elapsed*1000:.0f} ms waiting on a client that will "
+        "never read; a market feed does not wait for a subscriber"
+    )
+    assert hub.count == 1, "the stopped client must be dropped"
+    assert stopped.closed, "and closed, not just forgotten"
+    assert hub.dropped_slow == 1
+
+
+@pytest.mark.asyncio
+async def test_a_dropped_client_does_not_take_the_publisher_with_it():
+    # The drop path raises so the caller discards the client; that exception
+    # must not escape broadcast() and kill the publish task.
+    hub = Hub(send_timeout=0.01)
+
+    class Stopped(FakeSocket):
+        async def send(self, payload: str) -> None:
+            await asyncio.Event().wait()
+
+        async def close(self) -> None:
+            pass
+
+    hub.add(Stopped())
+    await hub.broadcast(protocol.error("tick"))
+    await hub.broadcast(protocol.error("tick"))
+    assert hub.count == 0
+
+
+def test_a_client_connecting_mid_command_is_not_handed_a_crossed_book():
+    """The one snapshot the publish loop does not produce.
+
+    `book_frame()` goes out from the connection handler, on connect, so it
+    bypassed the check in `_publish` -- and against the live engine, roughly
+    one connect in twenty-five landed inside the window between an Ack and
+    the trades that follow it.
+    """
+    reader = FakeReader()
+    publisher = TapPublisher(reader, Hub())
+    reader.queue = [_record(1, EVENT_ACK, 1, 1002000, 500, 1)]
+    publisher._drain()
+    good = publisher.book_frame()
+    assert good is not None and good["asks"] == [[1002000, 500, 1]]
+
+    reader.queue = [_record(2, EVENT_ACK, 2, 1002050, 500, 0)]
+    publisher._drain()
+    assert publisher.book.crossed
+    assert publisher.book_frame() == good, (
+        "a latecomer gets the last coherent book, not a half-applied command"
+    )
+
+
+def test_a_client_connecting_before_any_book_gets_nothing_rather_than_a_lie():
+    publisher = TapPublisher(FakeReader(), Hub())
+    publisher.book.apply(_record(1, EVENT_ACK, 1, 1002000, 500, 1))
+    publisher.book.apply(_record(2, EVENT_ACK, 2, 1002050, 500, 0))
+    assert publisher.book.crossed
+    assert publisher.book_frame() is None
