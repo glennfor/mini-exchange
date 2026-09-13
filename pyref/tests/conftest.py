@@ -40,3 +40,15 @@ def engine_binary() -> str:
             "`cmake --preset release && cmake --build build/release`"
         )
     return path
+
+
+@pytest.fixture(params=["naive", "fast"])
+def engine_book(request) -> str:
+    """Runs a cross-implementation test against each C++ book in turn.
+
+    Three-way agreement is the claim -- NaiveBook, FastBook and this oracle --
+    so the differential suite has to actually exercise both books rather than
+    assuming the in-repo NaiveBook-vs-FastBook test covers it. It nearly does;
+    "nearly" is the reason this parameter exists.
+    """
+    return request.param

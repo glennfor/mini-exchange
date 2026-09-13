@@ -25,17 +25,17 @@ from pyref.reference_engine import Config, ReferenceEngine
 
 
 @pytest.mark.parametrize("seed", [1, 2, 3, 17, 4711])
-def test_agrees_with_cpp_engine(engine_binary, seed):
+def test_agrees_with_cpp_engine(engine_binary, engine_book, seed):
     commands = generate(seed, 1000)
-    runner = EngineRunner(engine_binary)
+    runner = EngineRunner(engine_binary, book=engine_book)
     index = first_difference(reference_lines(commands), runner.lines(commands))
     assert index is None, f"first divergence at event index {index}"
 
 
 @pytest.mark.parametrize("seed", [5, 6, 7])
-def test_agrees_with_cpp_engine_with_stp(engine_binary, seed):
+def test_agrees_with_cpp_engine_with_stp(engine_binary, engine_book, seed):
     commands = generate(seed, 1000)
-    runner = EngineRunner(engine_binary)
+    runner = EngineRunner(engine_binary, book=engine_book)
     index = first_difference(
         reference_lines(commands, stp=True), runner.lines(commands, stp=True)
     )

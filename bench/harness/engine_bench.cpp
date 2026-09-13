@@ -47,12 +47,14 @@
 #include <memory>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include "core/config.hpp"
 #include "core/spsc_ring.hpp"
 #include "core/timestamp.hpp"
 
+#include "book/fast_book.hpp"
 #include "book/naive_book.hpp"
 #include "engine/event_sink.hpp"
 #include "engine/matching_engine.hpp"
@@ -95,24 +97,35 @@ bool pin_to_core(int core) {
 
 /// Open-loop: submit on a precomputed schedule, measure from the intended
 /// send time.
+template <class Book, class... BookArgs>
 void run_open_loop(const std::vector<Command>& commands,
                    const CycleCalibration& cal, double rate_per_second,
-                   int producer_core, int engine_core, RunResult& result) {
+                   int producer_core, int engine_core, RunResult& result,
+                   BookArgs&&... book_args) {
   const std::size_t n = commands.size();
   auto ring = std::make_unique<Ring>();
 
   // The schedule, precomputed. Generating it inside the loop would measure
   // the division.
   std::vector<Cycles> intended(n);
+  const bool paced = rate_per_second > 0.0;
   const Cycles period =
-      rate_per_second <= 0.0
-          ? 0
-          : cal.ns_to_cycles(static_cast<std::int64_t>(1e9 / rate_per_second));
+      paced ? cal.ns_to_cycles(static_cast<std::int64_t>(1e9 / rate_per_second))
+            : 0;
+
+  // With no offered rate there is no arrival schedule, so "latency from the
+  // intended send time" would just be "time since the run started" -- a
+  // measure of the backlog, not of the engine. In that mode the engine thread
+  // measures *service time* instead: dequeue to handler return. It is a
+  // different quantity and the report says so rather than quietly presenting
+  // it as end-to-end latency.
+  const bool service_time_mode = !paced;
 
   std::atomic<bool> engine_ready{false};
   std::atomic<std::uint64_t> processed{0};
   CountingSink sink;
-  MatchingEngine<NaiveBook, CountingSink> engine(sink);
+  MatchingEngine<Book, CountingSink> engine(
+      sink, EngineConfig{}, std::forward<BookArgs>(book_args)...);
 
   std::thread engine_thread([&] {
     (void)pin_to_core(engine_core);
@@ -121,9 +134,11 @@ void run_open_loop(const std::vector<Command>& commands,
     Command cmd{};
     while (i < n) {
       if (!ring->try_pop(cmd)) continue;
+      const Cycles popped = now_cycles();
       engine.apply(cmd);
       const Cycles done = now_cycles();
-      result.histogram.record(cal.cycles_to_ns(done - intended[i]));
+      result.histogram.record(
+          cal.cycles_to_ns(done - (service_time_mode ? popped : intended[i])));
       ++i;
       processed.store(i, std::memory_order_relaxed);
     }
@@ -167,20 +182,24 @@ void run_open_loop(const std::vector<Command>& commands,
                 static_cast<double>(result.counters.wall_ns)
           : 0.0;
   result.counters.open_loop = true;
+  result.counters.service_time_only = service_time_mode;
 }
 
 /// Closed-loop: send, wait for completion, send the next. Present only so the
 /// two curves can be published together; never report these percentiles as
 /// if they were open-loop.
+template <class Book, class... BookArgs>
 void run_closed_loop(const std::vector<Command>& commands,
                      const CycleCalibration& cal, int producer_core,
-                     int engine_core, RunResult& result) {
+                     int engine_core, RunResult& result,
+                     BookArgs&&... book_args) {
   const std::size_t n = commands.size();
   auto ring = std::make_unique<Ring>();
   std::atomic<std::uint64_t> done_count{0};
   std::atomic<bool> engine_ready{false};
   CountingSink sink;
-  MatchingEngine<NaiveBook, CountingSink> engine(sink);
+  MatchingEngine<Book, CountingSink> engine(
+      sink, EngineConfig{}, std::forward<BookArgs>(book_args)...);
 
   std::thread engine_thread([&] {
     (void)pin_to_core(engine_core);
@@ -264,7 +283,7 @@ void print_human(const RunProvenance& p, const RunCounters& c,
               static_cast<unsigned long long>(c.ring_full_events));
   std::printf("timer overhead  %lld ns (published, never subtracted)\n",
               static_cast<long long>(p.timer_overhead_ns));
-  std::printf("\nlatency (ns)\n");
+  std::printf("\n%s (ns)\n", c.service_time_only ? "service time" : "latency");
   std::printf("  min      %10lld\n", static_cast<long long>(s.min));
   std::printf("  p50      %10lld\n", static_cast<long long>(s.p50));
   std::printf("  p90      %10lld\n", static_cast<long long>(s.p90));
@@ -321,6 +340,11 @@ int main(int argc, char** argv) {
   Cli cli("engine_bench",
           "open-loop, coordinated-omission-free latency harness for the "
           "matching engine");
+  cli.option("book", "naive | fast -- the headline before/after comparison",
+             "fast");
+  cli.option("max-orders", "FastBook pool capacity", "");
+  cli.option("centre-price", "FastBook ladder centre (0 = from the first add)",
+             "0");
   cli.option("commands", "number of commands to run", "2000000");
   cli.option("rate", "offered rate in commands/sec (0 = as fast as possible)",
              "1000000");
@@ -375,12 +399,31 @@ int main(int argc, char** argv) {
 
   const int producer_core = static_cast<int>(cli.get_int("producer-core", 2));
   const int engine_core = static_cast<int>(cli.get_int("engine-core", 4));
+  const double rate = static_cast<double>(cli.get_int("rate", 1000000));
+  const std::string book = cli.get("book");
+  if (book != "naive" && book != "fast") {
+    std::cerr << "engine_bench: --book must be naive or fast\n";
+    return 2;
+  }
+
+  FastBookConfig ladder;
+  ladder.max_orders = static_cast<std::size_t>(
+      cli.get_int("max-orders", static_cast<long long>(kMaxOrders)));
+  ladder.centre_price = cli.get_int("centre-price", 0);
+
   if (cli.has("closed-loop")) {
-    run_closed_loop(commands, cal, producer_core, engine_core, result);
+    if (book == "fast")
+      run_closed_loop<FastBook>(commands, cal, producer_core, engine_core,
+                                result, ladder);
+    else
+      run_closed_loop<NaiveBook>(commands, cal, producer_core, engine_core,
+                                 result);
+  } else if (book == "fast") {
+    run_open_loop<FastBook>(commands, cal, rate, producer_core, engine_core,
+                            result, ladder);
   } else {
-    run_open_loop(commands, cal,
-                  static_cast<double>(cli.get_int("rate", 1000000)),
-                  producer_core, engine_core, result);
+    run_open_loop<NaiveBook>(commands, cal, rate, producer_core, engine_core,
+                             result);
   }
 
   RunProvenance prov;
@@ -395,7 +438,7 @@ int main(int argc, char** argv) {
   prov.coarse_timer = cal.coarse();
   prov.timer_overhead_ns =
       cal.cycles_to_ns(CycleCalibration::measure_read_overhead());
-  prov.book = "NaiveBook";
+  prov.book = book == "fast" ? "FastBook" : "NaiveBook";
   prov.sink = "CountingSink";
   prov.pattern = std::string(to_string(flow_cfg.pattern));
   prov.mix = mix_to_string(flow.config().mix);

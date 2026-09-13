@@ -431,3 +431,122 @@ remaining command, removing it must make the failure disappear.
 **Cost.** More runs of the engine per failure — O(n log n) subprocess calls
 rather than O(n). That is paid only when something is already broken, which
 is the right place to spend time.
+
+---
+
+## DD-020 — Orders do not cache their price-level index
+
+**Context.** `FastBook` finds a level by `(price - base) / tick`. The obvious
+optimisation is to cache that index on the order, so cancelling saves a
+subtract and a divide.
+
+**Choice.** Do not cache it. `Order` has no `level` field; the level is
+derived from the price, which the order already carries.
+
+**Why.** The saving is one integer subtract and one shift on a path that
+already does a hash lookup and touches two cache lines. What it costs is the
+ability to move the ladder window cheaply.
+
+With the index cached, re-centring the window means rewriting a field on
+*every live order* — up to four million of them, and four million scattered
+writes is tens of milliseconds of stall in the middle of a trading day.
+Without it, re-centring touches only the occupied level records, which is
+O(window) and, more importantly, independent of how many orders are resting.
+
+So the decision is: pay one arithmetic operation per cancel, forever, to keep
+the rare-but-catastrophic operation cheap. That is the right direction for a
+system judged on its tail.
+
+**Consequence.** `FastBook::recentre()` moves level records and rebuilds the
+bitset; no `Order` is read or written. The
+`MovesTheWindowWithoutTouchingAnyOrder` test asserts every order is still
+findable at its original price afterwards.
+
+---
+
+## DD-021 — `PriceLevel` is padded to a cache line, and that is not obviously right
+
+**Context.** Spec 7.3 specifies a 64-byte `PriceLevel` and then says to
+measure whether the padding actually helps.
+
+**Choice.** Padded by default, behind the `MINIEX_PAD_PRICE_LEVEL` CMake
+cache variable so the comparison can actually be run.
+
+**The argument for padding.** Two adjacent levels are frequently touched by
+different logical operations, and a level record is written on every add,
+fill and cancel at that price. Sharing a line means writes to the touch
+invalidate the line holding the level behind it.
+
+**The argument against, which is not weak.** Padding takes the resident
+ladder from 4 MB to 16 MB per side. Only a few hundred levels are ever
+occupied, so that is a great deal of cold, sparsely-touched memory, and it
+spreads the *occupied* levels four times further apart — which is exactly the
+wrong thing for the prefetcher when walking levels outward from the touch
+during a sweep.
+
+**Consequence.** TBD. The number that settles it is a `bench_all.sh` run with
+`MINIEX_PAD_PRICE_LEVEL=ON` and `=OFF` on the Linux reference machine. Until
+that has been run, this entry records a default and an argument, not a
+result — and a measured negative result would be published, because an
+unmeasured optimisation is worth less than a measured disappointment.
+
+---
+
+## DD-022 — A fixed ladder window with an overflow map, re-centred on drift
+
+**Context.** Spec question 25.1: how wide is the ladder window, what happens
+to a price outside it, and what does re-centring cost?
+
+**Choice.**
+
+* **Width**: `kLadderTicks` = 131072 ticks = **$13.11** at four implied
+  decimals. A CMake cache variable, so the benchmark can sweep it.
+* **Base**: `centre - width/2`, where `centre` is configured or, if not,
+  taken from the first price the book ever sees (question 25.2). That is what
+  lets the book serve an arbitrary symbol without being told its price range
+  in advance.
+* **Outside the window**: a per-side `std::map` overflow. Not a reject — an
+  order at a legitimate price must not be refused because of an internal
+  sizing choice — and not a widen, which would mean reallocating mid-session.
+* **Re-centring**: when the touch enters the outermost quarter of the window,
+  and at least `recentre_cooldown` operations have passed since the last one.
+
+**Cost of re-centring.** O(window), not O(orders): occupied level records are
+relocated and the bitset is rebuilt. No order record is touched (DD-020).
+The cooldown exists because a book straddling an edge — bids just inside the
+bottom, asks just outside the top — would otherwise re-centre on every
+command; `CooldownStopsAnEdgeStraddlingBookFromThrashing` pins that down.
+
+**How often does it fire on real data?** TBD — the honest answer needs an
+ITCH day, which arrives in M6. For orientation: a $13 window centred on the
+open means a stock must move more than $6.55 intraday before the touch even
+approaches an edge.
+
+**The overflow path is measured, not hidden.** It is a red-black tree and it
+allocates, so it is slower than the resident path by a wide margin.
+`--pattern ladder-overflow` exists to drive it hard, the differential tests
+run over it, and its benchmark row sits next to the resident one in the
+published results. On the development machine the overflow pattern runs at
+roughly 40% of the resident pattern's throughput — slower than `NaiveBook` on
+the same flow. That is a real limitation of this design and it belongs in the
+results table rather than in a footnote.
+
+---
+
+## DD-023 — `NaiveBook` stays, forever, in CI
+
+**Context.** Once `FastBook` exists and agrees with `NaiveBook` on millions of
+sequences, `NaiveBook` is dead weight by every conventional measure: slower,
+unused in production, and one more thing to keep compiling.
+
+**Choice.** It stays, it is never optimised, and it is never removed.
+
+**Why.** It is the only thing that can catch a bug introduced into `FastBook`
+next year. The Python oracle catches the same class of bug but runs orders of
+magnitude slower, so it can afford thousands of sequences where the in-repo
+C++ differential affords millions. Deleting the slow, obvious implementation
+after the fast one passes is deleting the reason to believe the fast one.
+
+The corollary is a rule: **never optimise `NaiveBook`.** The moment it becomes
+clever it stops being an independent check and becomes a second copy of the
+same assumptions.

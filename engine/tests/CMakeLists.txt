@@ -9,3 +9,7 @@ target_link_libraries(engine_format_test PRIVATE miniex::engine)
 
 miniex_add_test(engine_invariant_test invariant_test.cpp)
 target_link_libraries(engine_invariant_test PRIVATE miniex::engine)
+
+miniex_add_test(engine_book_differential_test book_differential_test.cpp)
+target_link_libraries(engine_book_differential_test PRIVATE
+  miniex::engine miniex::replay)

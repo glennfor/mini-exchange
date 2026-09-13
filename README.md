@@ -4,8 +4,10 @@ A price-time-priority limit order book matching engine, a zero-copy Nasdaq
 ITCH 5.0 feed decoder, and the benchmark and validation machinery needed to
 believe the numbers — in modern C++20.
 
-> **Status: under construction.** Milestones 0-2 are complete: build
-> skeleton, core primitives, and a correct matching engine over `NaiveBook`.
+> **Status: under construction.** Milestones 0-5 are complete: build
+> skeleton, core primitives, a correct matching engine, an independent Python
+> oracle with differential testing, the open-loop benchmark harness, and
+> `FastBook`.
 > No performance number appears in this README until it has been measured on
 > a machine whose configuration is committed next to it. Where a number is
 > not yet measured, this file says `TBD` and nothing else.
@@ -30,6 +32,24 @@ ITCH 5.0 file ──► feed/ decoder ──┬──► book/ MarketDataBook �
 * `viz/` — a shared-memory tap the engine cannot be stalled by, plus a
   server and a UI that contain no matching logic.
 
+## Correctness
+
+Three independent implementations of the matching semantics agree, byte for
+byte, on the canonical event stream:
+
+| | What it is |
+|---|---|
+| `NaiveBook` | `std::map` of price to `std::list`; obvious, never optimised, never deleted |
+| `FastBook` | price ladder, intrusive FIFOs, slab pool, hierarchical best-price bitset |
+| `pyref/` | written from `docs/matching-semantics.md`, not from the C++; talks to the engine only through text files |
+
+Checked by `engine_replay --book both --diff` over every flow pattern
+including the pathological ones, and by `pyref/differential.py`, which
+minimises any disagreement to a 1-minimal reproducer before reporting it.
+The differential suite also injects known bugs and asserts they are caught —
+one of which was not, which is how the flow generator's missing coverage of
+same-price size-downs was found.
+
 ## Results
 
 | Metric | `NaiveBook` | `FastBook` |
@@ -37,9 +57,13 @@ ITCH 5.0 file ──► feed/ decoder ──┬──► book/ MarketDataBook �
 | Throughput (cmd/s) | TBD | TBD |
 | p50 / p99 / p99.9 / max | TBD | TBD |
 
-Nothing is published here yet. See `docs/benchmarking.md` for the
-methodology that will produce these, and `scripts/bench_all.sh` for the
-single command that will reproduce them.
+**Nothing is published here yet.** No Linux x86-64 reference machine has been
+run. The development machine is Apple Silicon, whose architectural counter
+ticks at 24 MHz — 41 ns per tick — which cannot resolve the operations being
+measured; the harness prints a banner saying so on every run.
+
+See `docs/benchmarking.md` for the methodology and `scripts/bench_all.sh` for
+the single command that reproduces every number.
 
 ## Build
 

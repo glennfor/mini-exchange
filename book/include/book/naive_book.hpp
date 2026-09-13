@@ -51,7 +51,6 @@ public:
     o.qty_orig = qty;
     o.next = kInvalidIndex;
     o.prev = kInvalidIndex;
-    o.level = kInvalidLevel;
     o.participant = participant;
     o.side = side;
     o.type = OrderType::Limit;

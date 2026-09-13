@@ -84,9 +84,6 @@ static_assert(kMarketSellPrice < kMarketBuyPrice);
 /// Sentinel for an unset 32-bit pool index. Index 0 is a valid order.
 inline constexpr std::uint32_t kInvalidIndex = 0xFFFFFFFFU;
 
-/// Sentinel for an unset price-level index.
-inline constexpr std::uint32_t kInvalidLevel = kInvalidIndex;
-
 // ---------------------------------------------------------------------------
 // Enumerations
 // ---------------------------------------------------------------------------
@@ -214,6 +211,16 @@ enum OrderFlags : std::uint8_t {
 /// loop touches one of these per fill and the cancel path touches exactly
 /// one. The layout is asserted so that a future field addition fails the
 /// build rather than silently doubling the cost of a cancel.
+///
+/// **There is deliberately no owning-level index here.** The obvious design
+/// caches the price level's array index on the order, saving one subtraction
+/// on the cancel path. It is not worth it: the level index is a pure function
+/// of the price (`(price - ladder_base) / tick`), which the order already
+/// carries, so caching it buys one integer op and costs the ability to move
+/// the ladder window cheaply. With the index cached, re-centring the ladder
+/// must visit every live order -- up to four million of them -- to rewrite a
+/// field. Without it, re-centring touches only the occupied levels. See
+/// DD-020 and `book/fast_book.hpp`.
 struct alignas(64) Order {
   Price price;               ///< limit price in ticks
   TsNanos ts_entry;          ///< engine acceptance order (see docs)
@@ -222,13 +229,12 @@ struct alignas(64) Order {
   Qty qty_orig;              ///< shares on arrival
   std::uint32_t next;        ///< intrusive FIFO successor (pool index)
   std::uint32_t prev;        ///< intrusive FIFO predecessor (pool index)
-  std::uint32_t level;       ///< owning price-level index
   ParticipantId participant; ///< for self-trade prevention
   Side side;
   OrderType type;
   TimeInForce tif;
   std::uint8_t flags;
-  std::uint8_t _pad[14];
+  std::uint8_t _pad[18];
 };
 
 static_assert(sizeof(Order) == 64, "Order must occupy exactly one cache line");

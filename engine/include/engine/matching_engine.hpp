@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <utility>
 
 #include "core/config.hpp"
 #include "core/spsc_ring.hpp"
@@ -82,8 +83,14 @@ struct EngineStats {
 template <OrderBook Book, class Sink>
 class MatchingEngine {
 public:
-  explicit MatchingEngine(Sink& sink, EngineConfig cfg = {})
-      : sink_(sink), cfg_(cfg), completed_(cfg.completed_capacity) {}
+  /// Any trailing arguments are forwarded to the book's constructor, so a
+  /// book that needs sizing (FastBook) can be given it without the engine
+  /// knowing anything about what the sizing means.
+  template <class... BookArgs>
+  explicit MatchingEngine(Sink& sink, EngineConfig cfg = {},
+                          BookArgs&&... book_args)
+      : book_(std::forward<BookArgs>(book_args)...), sink_(sink), cfg_(cfg),
+        completed_(cfg.completed_capacity) {}
 
   MatchingEngine(const MatchingEngine&) = delete;
   MatchingEngine& operator=(const MatchingEngine&) = delete;

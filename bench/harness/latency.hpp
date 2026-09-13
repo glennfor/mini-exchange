@@ -145,12 +145,16 @@ struct RunCounters {
   double offered_rate{0.0};
   double achieved_rate{0.0};
   bool open_loop{true};
+  /// True when the run had no offered rate, so the recorded distribution is
+  /// service time (dequeue to handler return) rather than end-to-end latency.
+  /// Carried into the CSV so a row can never be mistaken for the other kind.
+  bool service_time_only{false};
 };
 
 inline const char* csv_header() {
   return "git_sha,build,timing_backend,tap,coarse_timer,timer_overhead_ns,"
          "book,sink,pattern,mix,seed,warmup_orders,max_orders,ladder_ticks,"
-         "ring_capacity,loop,commands,events,trades,schedule_misses,"
+         "ring_capacity,loop,measure,commands,events,trades,schedule_misses,"
          "ring_full,sink_drops,wall_ns,offered_rate,achieved_rate,"
          "min_ns,p50_ns,p90_ns,p99_ns,p999_ns,p9999_ns,max_ns,mean_ns\n";
 }
@@ -160,7 +164,7 @@ inline std::string csv_row(const RunProvenance& p, const RunCounters& c,
   char buf[1024];
   const int n = std::snprintf(
       buf, sizeof(buf),
-      "%s,%s,%s,%s,%s,%lld,%s,%s,%s,%s,%llu,%zu,%zu,%zu,%zu,%s,"
+      "%s,%s,%s,%s,%s,%lld,%s,%s,%s,%s,%llu,%zu,%zu,%zu,%zu,%s,%s,"
       "%llu,%llu,%llu,%llu,%llu,%llu,%lld,%.0f,%.0f,"
       "%lld,%lld,%lld,%lld,%lld,%lld,%lld,%.1f\n",
       p.git_sha.c_str(), p.build_type.c_str(), p.timing_backend.c_str(),
@@ -169,6 +173,7 @@ inline std::string csv_row(const RunProvenance& p, const RunCounters& c,
       p.sink.c_str(), p.pattern.c_str(), p.mix.c_str(),
       static_cast<unsigned long long>(p.seed), p.warmup_orders, p.max_orders,
       p.ladder_ticks, p.ring_capacity, c.open_loop ? "open" : "closed",
+      c.service_time_only ? "service_time" : "end_to_end_latency",
       static_cast<unsigned long long>(c.commands),
       static_cast<unsigned long long>(c.events),
       static_cast<unsigned long long>(c.trades),

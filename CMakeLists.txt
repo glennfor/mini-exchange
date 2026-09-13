@@ -54,6 +54,8 @@ endif()
 if(MINIEX_TAP)
   target_compile_definitions(miniex_flags INTERFACE MINIEX_TAP=1)
 endif()
+target_compile_definitions(miniex_flags INTERFACE
+  MINIEX_PAD_PRICE_LEVEL=$<BOOL:${MINIEX_PAD_PRICE_LEVEL}>)
 
 # ---------------------------------------------------------------------------
 # Provenance: every tool prints the build type and git SHA that produced it.

@@ -120,6 +120,8 @@ class EngineRunner:
     """
 
     binary: str
+    book: str = "naive"
+    max_orders: int = 1 << 18
 
     def lines(self, commands: list[Command], stp: bool = False) -> list[str]:
         with tempfile.NamedTemporaryFile(
@@ -128,7 +130,15 @@ class EngineRunner:
             handle.write(write_commands(commands))
             path = handle.name
         try:
-            argv = [self.binary, "--commands", path]
+            argv = [
+                self.binary,
+                "--commands",
+                path,
+                "--book",
+                self.book,
+                "--max-orders",
+                str(self.max_orders),
+            ]
             if stp:
                 argv.append("--stp")
             result = subprocess.run(
@@ -270,6 +280,10 @@ def report(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="pyref.differential")
     parser.add_argument("--engine", required=True, help="path to engine_replay")
+    parser.add_argument(
+        "--book", default="naive", choices=["naive", "fast"],
+        help="which C++ book to compare against",
+    )
     parser.add_argument("--seeds", type=int, default=100)
     parser.add_argument("--first-seed", type=int, default=1)
     parser.add_argument("--length", type=int, default=1000)
@@ -280,7 +294,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    runner = EngineRunner(args.engine)
+    runner = EngineRunner(args.engine, book=args.book)
     failures = 0
     for i in range(args.seeds):
         seed = args.first_seed + i
@@ -299,7 +313,7 @@ def main(argv: list[str] | None = None) -> int:
 
     print(
         f"# {args.seeds} sequences x {args.length} commands: "
-        f"reference and C++ engine agree",
+        f"reference and C++ engine ({args.book} book) agree",
         file=sys.stderr,
     )
     return 0

@@ -122,10 +122,15 @@ jobs:
       - name: Build the engine
         env: { CC: clang, CXX: clang++ }
         run: cmake --preset release && cmake --build build/release --target engine_replay
-      - name: Reference vs C++ engine
+      - name: Reference vs C++ engine (NaiveBook)
         run: |
           python -m pyref.differential \
-            --engine build/release/tools/engine_replay \
+            --engine build/release/tools/engine_replay --book naive \
+            --seeds 1000 --length 1000 --out-dir "$RUNNER_TEMP/repro"
+      - name: Reference vs C++ engine (FastBook)
+        run: |
+          python -m pyref.differential \
+            --engine build/release/tools/engine_replay --book fast \
             --seeds 1000 --length 1000 --out-dir "$RUNNER_TEMP/repro"
       - name: Reference vs C++ engine, self-trade prevention on
         run: |
@@ -138,6 +143,34 @@ jobs:
         with:
           name: differential-reproducers
           path: ${{ runner.temp }}/repro
+
+  book-differential:
+    name: NaiveBook vs FastBook -- identical event streams
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y ninja-build
+      - name: Build
+        env: { CC: clang, CXX: clang++ }
+        run: cmake --preset release && cmake --build build/release --target engine_replay
+      - name: Every flow pattern, both books, byte-identical
+        run: |
+          set -eux
+          for pattern in balanced deep-book touch-churn wide-spread \
+                         ladder-overflow pool-pressure; do
+            for seed in 1 2 3; do
+              ./build/release/tools/engine_replay \
+                --synthetic 200000 --warmup 20000 --seed "$seed" \
+                --pattern "$pattern" --book both --diff \
+                --max-orders 1048576 --repro "$RUNNER_TEMP/repro.cmds"
+            done
+          done
+      - name: Upload the divergent command stream if there was one
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: book-differential-repro
+          path: ${{ runner.temp }}/repro.cmds
 
   determinism:
     name: determinism -- same input twice, and across -O levels
@@ -158,3 +191,6 @@ jobs:
           cmp run_a.events run_b.events
           ./build/dev/tools/engine_replay --verify run_a.events
           ./build/release/tools/engine_replay --verify run_a.events
+          # And the same stream from the other book, at both -O levels.
+          ./build/release/tools/engine_replay --book fast --verify run_a.events
+          ./build/dev/tools/engine_replay --book fast --verify run_a.events

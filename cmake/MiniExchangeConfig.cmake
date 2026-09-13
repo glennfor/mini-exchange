@@ -11,6 +11,9 @@ set(MINIEX_RING_CAPACITY   65536 CACHE STRING "SPSC ingress ring capacity (power
 set(MINIEX_TAP_CAPACITY  1048576 CACHE STRING "Observability tap ring capacity (power of two)")
 set(MINIEX_COMPLETED_RING  65536 CACHE STRING "Recently-completed order id ring (power of two)")
 
+option(MINIEX_PAD_PRICE_LEVEL
+  "Pad PriceLevel to a full cache line (see DD-021; measure both ways)" ON)
+
 configure_file(
   "${CMAKE_CURRENT_SOURCE_DIR}/cmake/config.hpp.in"
   "${CMAKE_CURRENT_BINARY_DIR}/generated/core/config.hpp"
