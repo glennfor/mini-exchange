@@ -8,8 +8,14 @@
  *
  * So: each publish tick draws **one new column** into an offscreen canvas,
  * and the offscreen canvas is scrolled left by one column. The visible canvas
- * is a single blit. The whole buffer is only re-rendered when the price
- * window moves, which the hysteresis in `updateWindow` makes rare.
+ * is a single blit.
+ *
+ * The price window moves with the market, and moving it moves the painted
+ * history with it: the same blit that scrolls left by a column scrolls
+ * vertically by the rows the window moved, so history stays attached to price
+ * without being repainted. The whole buffer is only re-rendered when the
+ * *scale* changes -- a different number of ticks on the axis -- which the
+ * deadband in `updateWindow` makes rare.
  */
 
 import { useEffect, useRef } from 'react';
@@ -18,16 +24,18 @@ import { COLOR, heatColor, useSizedCanvas } from '../lib/canvas';
 import {
   ColumnRing,
   rowFor,
+  shiftWindow,
   updateWindow,
+  windowSpan,
   type HeatColumn,
   type PriceWindow,
+  type WindowInput,
 } from '../lib/heatmap';
 import { formatPrice, type BookFrame, type TradeItem } from '../protocol';
 import { drawPlaceholder } from './DepthLadder';
 
 const COLUMNS = 900; // 30 s at 30 Hz
 const COLUMN_PX = 2;
-const PRICE_SPAN = 120; // ticks visible
 
 interface Props {
   book: React.MutableRefObject<BookFrame | null>;
@@ -74,14 +82,21 @@ export function BookHeatmap({ book, trades, revision }: Props) {
     if (revision.current !== lastRevision.current) {
       lastRevision.current = revision.current;
 
+      // The window is sized from every level the server sent, not from the
+      // touch: a window sized to the touch clips the depth behind it, and
+      // `rowFor` drops a clipped level silently.
       const previous = window_.current;
-      window_.current = updateWindow(
-        previous,
-        frame.bids[0]?.[0],
-        frame.asks[0]?.[0],
-        PRICE_SPAN,
-      );
-      if (window_.current !== previous) needsFullRedraw.current = true;
+      const wanted = updateWindow(previous, priceExtent(frame));
+      let dy = 0;
+      if (previous === null || wanted === null) {
+        window_.current = wanted;
+        needsFullRedraw.current = true;
+      } else if (wanted !== previous) {
+        const shift = shiftWindow(previous, wanted, rows);
+        window_.current = shift.window;
+        if (shift.dy === null) needsFullRedraw.current = true;
+        else dy = shift.dy;
+      }
 
       // Trades that arrived since the previous column, over-plotted on it.
       const fresh: HeatColumn['trades'] = [];
@@ -102,10 +117,11 @@ export function BookHeatmap({ book, trades, revision }: Props) {
         redrawAll(offCtx, off, ring.current, window_.current, rows);
         needsFullRedraw.current = false;
       } else {
-        // Scroll left by one column and draw only the new one. This is the
-        // whole performance argument for the panel.
+        // Scroll left by one column -- and down by however far the price
+        // window moved -- then draw only the new column. One drawImage does
+        // both; this is the whole performance argument for the panel.
         offCtx.globalCompositeOperation = 'copy';
-        offCtx.drawImage(off, -COLUMN_PX, 0);
+        offCtx.drawImage(off, -COLUMN_PX, dy);
         offCtx.globalCompositeOperation = 'source-over';
         const newest = ring.current.newest();
         if (newest && window_.current) {
@@ -128,6 +144,22 @@ export function BookHeatmap({ book, trades, revision }: Props) {
   }, []);
 
   return <canvas ref={canvasRef} className="block h-full w-full" />;
+}
+
+/** The full price range the server sent, which is what must stay visible. */
+function priceExtent(frame: BookFrame): WindowInput | null {
+  let lowPrice = Infinity;
+  let highPrice = -Infinity;
+  for (const [price] of frame.bids) {
+    if (price < lowPrice) lowPrice = price;
+    if (price > highPrice) highPrice = price;
+  }
+  for (const [price] of frame.asks) {
+    if (price < lowPrice) lowPrice = price;
+    if (price > highPrice) highPrice = price;
+  }
+  if (!Number.isFinite(lowPrice)) return null;
+  return { lowPrice, highPrice };
 }
 
 function redrawAll(
@@ -155,6 +187,12 @@ function drawColumn(
 ) {
   ctx.clearRect(x, 0, COLUMN_PX, rows);
 
+  // One tick tall, so a level occupies exactly the price it is at. This used
+  // to be rows/120 from the days of a fixed 120-tick span; with the span now
+  // sized to the book, that constant would draw a level 64 ticks tall on a
+  // wide window.
+  const tickPx = Math.max(1, Math.floor(rows / Math.max(1, windowSpan(window_))));
+
   let max = 1;
   for (const qty of column.bids.values()) max = Math.max(max, qty);
   for (const qty of column.asks.values()) max = Math.max(max, qty);
@@ -164,7 +202,7 @@ function drawColumn(
       const row = rowFor(price, window_, rows);
       if (row < 0) continue;
       ctx.fillStyle = heatColor(qty, max, side);
-      ctx.fillRect(x, row, COLUMN_PX, Math.max(1, Math.floor(rows / 120)));
+      ctx.fillRect(x, row, COLUMN_PX, tickPx);
     }
   };
   paint(column.bids, 'bid');
@@ -196,9 +234,15 @@ function drawAxis(
   ctx.textBaseline = 'top';
   ctx.textAlign = 'left';
   if (window_) {
-    ctx.fillText(formatPrice(window_.high), 4, 3);
+    // The bounds land on fractions of a tick once the window has been
+    // quantised to whole rows; formatPrice wants an integer.
+    ctx.fillText(formatPrice(Math.round(window_.high)), 4, 3);
     ctx.textBaseline = 'bottom';
-    ctx.fillText(formatPrice(window_.low), 4, height - 3);
+    ctx.fillText(formatPrice(Math.round(window_.low)), 4, height - 3);
+    // The scale is not fixed, so say what it currently is.
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'top';
+    ctx.fillText(`${Math.round(windowSpan(window_))} ticks`, width - 4, 3);
   }
   ctx.textBaseline = 'bottom';
   ctx.textAlign = 'right';
