@@ -11,7 +11,7 @@ dev = ["pytest>=8", "ruff>=0.6", "numpy", "pandas", "matplotlib"]
 [tool.ruff]
 line-length = 88
 target-version = "py311"
-src = ["pyref"]
+src = ["pyref", "scripts"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
