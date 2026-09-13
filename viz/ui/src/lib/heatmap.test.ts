@@ -29,9 +29,13 @@ describe('ColumnRing', () => {
   });
 
   it('holds a full 30-second buffer at 30 Hz', () => {
-    // The spec's constraint: 900 columns, and the UI must stay at 60 fps with
-    // it full. This test only proves the buffer arithmetic; the frame rate is
-    // a manual check.
+    // The spec's constraint is 900 columns with the UI still at 60 fps.
+    //
+    // This test proves the buffer arithmetic and nothing else. The frame rate
+    // has **not** been verified: it needs a browser, and the one available in
+    // this environment could not be driven (see viz/ui/README.md). The
+    // argument that it should hold is architectural -- one column drawn per
+    // tick into an offscreen canvas, then a single blit -- not measured.
     const ring = new ColumnRing(900);
     for (let i = 0; i < 5000; i++) ring.push(column(i));
     expect(ring.size).toBe(900);
