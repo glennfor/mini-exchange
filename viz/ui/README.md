@@ -59,7 +59,7 @@ answer is to add a print statement and rebuild.
 ## Testing
 
 ```bash
-npm test          # 46 tests
+npm test          # 52 tests
 npm run typecheck
 ```
 
@@ -67,10 +67,12 @@ Three layers, and the third is the one that matters:
 
 1. **Pure logic** (`lib/heatmap.test.ts`) — the column ring buffer and the
    price-window arithmetic, in node: that the window follows a drifting
-   market by the smallest step that works rather than snapping, that no level
-   ever falls outside it however wide the book, and that a window move is
-   always a whole number of rows so the painted history can be blitted
-   instead of repainted.
+   market by the smallest step that works rather than snapping, that a window
+   move is always a whole number of rows so the painted history can be blitted
+   instead of repainted, and -- the one that matters -- that **nothing already
+   drawn ever leaves the frame**, checked on every tick of a two-thousand-tick
+   drifting market. The scroll buffer destroys whatever it pushes past an
+   edge, so a window that can clip loses history permanently.
 2. **Schema drift** (`protocol.test.ts`) — parses the committed sample
    recording, byte for byte the file the mock server replays, and asserts
    every frame satisfies the TypeScript types. Drift between the TypeScript

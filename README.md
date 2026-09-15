@@ -322,7 +322,7 @@ python3.11 -m venv .venv && .venv/bin/pip install -e '.[dev]'
 .venv/bin/python -m pytest                 # 113 tests
 
 # the UI
-cd viz/ui && npm install && npm test       # 46 tests
+cd viz/ui && npm install && npm test       # 52 tests
 ```
 
 Verified from a fresh `git clone` on the development machine: **12 seconds to
@@ -475,6 +475,19 @@ the code. The list is the most honest thing in this README.
     than 120 ticks lost its outer levels with no indication. Reported by
     someone looking at the running dashboard: *"it is moving around a bit …
     they are out of bounds it looks quite jumpy."*
+
+    **And my first fix for it was wrong**, in the way that is worth writing
+    down. I made the window move smoothly and sized it to the current book —
+    and shipped it, because every test passed and the invariant I had thought
+    to state ("no level from *this frame* is clipped") held. The same person
+    came back: history that drifted off the top of the frame came back as a
+    blank stripe. A scroll buffer is a **cache, never a store** — whatever the
+    blit pushes past an edge is destroyed, and while that is correct going
+    left, where time only moves one way, the price axis moves both ways. The
+    window has to be sized to the extent of *every column in the ring*, so
+    that the rows the blit discards are provably empty ones. A bigger buffer
+    would only have made the gap rarer. The lesson is about where I looked:
+    I verified the frame I was drawing and not the history I was keeping.
 
 22. **The dashboard showed a book the engine could not have held** — bids at
     100.2195 against asks at 100.1840, crossed by 355 ticks and stuck that

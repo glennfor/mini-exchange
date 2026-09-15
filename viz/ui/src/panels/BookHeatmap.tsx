@@ -16,6 +16,12 @@
  * without being repainted. The whole buffer is only re-rendered when the
  * *scale* changes -- a different number of ticks on the axis -- which the
  * deadband in `updateWindow` makes rare.
+ *
+ * What makes that safe is that the window is derived from the extent of the
+ * **whole ring**, not from the newest frame: everything drawn is inside it,
+ * so the rows the vertical blit throws away are always empty ones. Sizing the
+ * window to the current book instead is what made history that drifted off
+ * the top of the frame come back as a blank gap -- see `lib/heatmap.ts`.
  */
 
 import { useEffect, useRef } from 'react';
@@ -23,13 +29,13 @@ import { useEffect, useRef } from 'react';
 import { COLOR, heatColor, useSizedCanvas } from '../lib/canvas';
 import {
   ColumnRing,
+  makeColumn,
   rowFor,
   shiftWindow,
   updateWindow,
   windowSpan,
   type HeatColumn,
   type PriceWindow,
-  type WindowInput,
 } from '../lib/heatmap';
 import { formatPrice, type BookFrame, type TradeItem } from '../protocol';
 import { drawPlaceholder } from './DepthLadder';
@@ -82,11 +88,30 @@ export function BookHeatmap({ book, trades, revision }: Props) {
     if (revision.current !== lastRevision.current) {
       lastRevision.current = revision.current;
 
-      // The window is sized from every level the server sent, not from the
-      // touch: a window sized to the touch clips the depth behind it, and
-      // `rowFor` drops a clipped level silently.
+      // Trades that arrived since the previous column, over-plotted on it.
+      const fresh: HeatColumn['trades'] = [];
+      for (const trade of trades.current) {
+        if (trade.t_ns <= lastTradeSeen.current) break;
+        fresh.push({ price: trade.price, qty: trade.qty, side: trade.aggressor });
+      }
+      if (trades.current[0]) lastTradeSeen.current = trades.current[0].t_ns;
+
+      // The column goes in first, and only then is the window recomputed --
+      // from the ring, so it covers the new column *and* all the history
+      // still on screen. Deriving it from this frame alone is what let
+      // history drift out of the window, where `rowFor` drops it and the
+      // scroll buffer makes the loss permanent.
+      ring.current.push(
+        makeColumn(
+          frame.t_ns,
+          new Map(frame.bids.map((l) => [l[0], l[1]])),
+          new Map(frame.asks.map((l) => [l[0], l[1]])),
+          fresh,
+        ),
+      );
+
       const previous = window_.current;
-      const wanted = updateWindow(previous, priceExtent(frame));
+      const wanted = updateWindow(previous, ring.current.extent());
       let dy = 0;
       if (previous === null || wanted === null) {
         window_.current = wanted;
@@ -97,21 +122,6 @@ export function BookHeatmap({ book, trades, revision }: Props) {
         if (shift.dy === null) needsFullRedraw.current = true;
         else dy = shift.dy;
       }
-
-      // Trades that arrived since the previous column, over-plotted on it.
-      const fresh: HeatColumn['trades'] = [];
-      for (const trade of trades.current) {
-        if (trade.t_ns <= lastTradeSeen.current) break;
-        fresh.push({ price: trade.price, qty: trade.qty, side: trade.aggressor });
-      }
-      if (trades.current[0]) lastTradeSeen.current = trades.current[0].t_ns;
-
-      ring.current.push({
-        tNs: frame.t_ns,
-        bids: new Map(frame.bids.map((l) => [l[0], l[1]])),
-        asks: new Map(frame.asks.map((l) => [l[0], l[1]])),
-        trades: fresh,
-      });
 
       if (needsFullRedraw.current) {
         redrawAll(offCtx, off, ring.current, window_.current, rows);
@@ -144,22 +154,6 @@ export function BookHeatmap({ book, trades, revision }: Props) {
   }, []);
 
   return <canvas ref={canvasRef} className="block h-full w-full" />;
-}
-
-/** The full price range the server sent, which is what must stay visible. */
-function priceExtent(frame: BookFrame): WindowInput | null {
-  let lowPrice = Infinity;
-  let highPrice = -Infinity;
-  for (const [price] of frame.bids) {
-    if (price < lowPrice) lowPrice = price;
-    if (price > highPrice) highPrice = price;
-  }
-  for (const [price] of frame.asks) {
-    if (price < lowPrice) lowPrice = price;
-    if (price > highPrice) highPrice = price;
-  }
-  if (!Number.isFinite(lowPrice)) return null;
-  return { lowPrice, highPrice };
 }
 
 function redrawAll(

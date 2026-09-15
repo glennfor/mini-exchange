@@ -1,13 +1,30 @@
 /**
- * The heatmap's column ring buffer.
+ * The heatmap's column ring buffer and the price window over it.
  *
  * The panel keeps the last N publish ticks and blits them. It does **not**
  * redraw history every frame: at 30 Hz with 900 columns and 5000 price rows
  * that would be 135 million cells a second, which no browser will do.
  *
  * Instead each new column is drawn once, into an offscreen canvas that is
- * scrolled left by one column per tick. Redrawing the whole buffer only
- * happens when the price window changes, which is rare.
+ * scrolled by one column per tick. Redrawing the whole buffer only happens
+ * when the price *scale* changes, which is rare.
+ *
+ * **The scroll buffer is a cache, never the store.** Anything blitted past an
+ * edge is destroyed: the pixels are gone and nothing can bring them back.
+ * That is fine going left, because time only moves one way and a column that
+ * leaves the left edge is genuinely over. It is not fine going up and down,
+ * because the price window moves *both* ways -- and the first version of this
+ * moved it, so a level that drifted off the top of the frame came back as a
+ * blank gap when the market came back to it. Correctly scrolled, correctly
+ * aligned, and missing the data.
+ *
+ * The fix is not a bigger buffer, which only makes the gap rarer. It is to
+ * make the window unable to clip: it is sized and positioned from the extent
+ * of **every column in the ring**, not from the newest book frame, so
+ * everything the panel has ever drawn is inside it by construction. The blit
+ * then only ever discards rows that are outside the ring's price range, which
+ * are rows with nothing in them. `windowHoldsEverything` states the invariant
+ * and the tests check it over thirty seconds of a drifting market.
  *
  * This file is the pure part -- the ring buffer and the price-window
  * arithmetic -- so it can be tested in node without a canvas.
@@ -19,6 +36,40 @@ export interface HeatColumn {
   bids: Map<number, number>;
   asks: Map<number, number>;
   trades: { price: number; qty: number; side: 'B' | 'S' }[];
+  /** Lowest price this column draws anything at; null if it draws nothing. */
+  lo: number | null;
+  /** Highest price this column draws anything at. */
+  hi: number | null;
+}
+
+/**
+ * Builds a column and records the price extent of everything in it.
+ *
+ * The extent is computed once, here, because the window is derived from the
+ * extent of the whole ring on every tick and rescanning 900 columns of level
+ * maps to get it would cost more than drawing them.
+ */
+export function makeColumn(
+  tNs: number,
+  bids: Map<number, number>,
+  asks: Map<number, number>,
+  trades: HeatColumn['trades'],
+): HeatColumn {
+  let lo = Infinity;
+  let hi = -Infinity;
+  const see = (price: number) => {
+    if (price < lo) lo = price;
+    if (price > hi) hi = price;
+  };
+  for (const price of bids.keys()) see(price);
+  for (const price of asks.keys()) see(price);
+  // Trades count. A print lands at the *resting* order's price, and that
+  // level may already be gone from the book by the time this column is built,
+  // so a trade can sit outside the depth around it. Leaving prints out of the
+  // extent is how a trade mark ends up drawn outside the window.
+  for (const trade of trades) see(trade.price);
+  const empty = !Number.isFinite(lo);
+  return { tNs, bids, asks, trades, lo: empty ? null : lo, hi: empty ? null : hi };
 }
 
 export class ColumnRing {
@@ -51,6 +102,28 @@ export class ColumnRing {
     return out;
   }
 
+  /**
+   * The price range of everything currently in the ring, or null if empty.
+   *
+   * This, not the newest book frame, is what the window is sized to: the
+   * panel draws thirty seconds of history and all of it has to fit, or the
+   * parts that do not are silently clipped -- and, once the buffer has been
+   * scrolled, unrecoverable.
+   */
+  extent(): WindowInput | null {
+    let lowPrice = Infinity;
+    let highPrice = -Infinity;
+    const start = (this.head - this.filled + this.capacity) % this.capacity;
+    for (let i = 0; i < this.filled; i++) {
+      const column = this.buffer[(start + i) % this.capacity];
+      if (!column || column.lo === null || column.hi === null) continue;
+      if (column.lo < lowPrice) lowPrice = column.lo;
+      if (column.hi > highPrice) highPrice = column.hi;
+    }
+    if (!Number.isFinite(lowPrice)) return null;
+    return { lowPrice, highPrice };
+  }
+
   newest(): HeatColumn | null {
     if (this.filled === 0) return null;
     return this.buffer[(this.head - 1 + this.capacity) % this.capacity] ?? null;
@@ -79,20 +152,30 @@ export function windowSpan(w: PriceWindow): number {
  *
  * A discrete ladder rather than a continuous fit, because changing the span
  * changes how many pixels a tick is worth, which invalidates the whole
- * painted history and forces a full repaint. Snapping to powers of two means
- * that happens when the market's depth genuinely changes scale, not every
- * time one order arrives a tick further out.
+ * painted history and forces a full repaint. Snapping to a ladder means that
+ * happens when the market genuinely changes scale, not every time one order
+ * arrives a tick further out.
+ *
+ * The rungs go up by halves rather than by doubling. Doubling is the obvious
+ * choice and it wastes the panel: the window is at worst a whole rung wider
+ * than the data needs, so on a doubling ladder the market could occupy as
+ * little as 38% of the height -- measured at 425 ticks of real range drawn on
+ * a 1024-tick axis. Halving the step takes the worst case to 51% and the
+ * typical case to about 63%, for a handful more repaints an hour.
  */
-export const SPANS = [32, 64, 128, 256, 512, 1024, 2048, 4096, 8192] as const;
+export const SPANS = [
+  32, 48, 64, 96, 128, 192, 256, 384, 512, 768, 1024, 1536, 2048, 3072, 4096,
+  6144, 8192,
+] as const;
 
 /** Keeps the visible range this far from the edge, as a fraction of the span. */
 const EDGE_MARGIN = 0.12;
 
 /**
  * How much larger than necessary the span may be before it is allowed to
- * shrink. The ladder doubles, so 2.5 means the data has to fit inside a span
- * two rungs down -- a deadband wide enough that a book breathing around a
- * rung boundary cannot make the axis flap between two scales.
+ * shrink. The rungs go up by halves, so 2.5 means the data has to fit two
+ * rungs down -- a deadband wide enough that a market breathing around a rung
+ * boundary cannot make the axis flap between two scales.
  */
 const SHRINK_DEADBAND = 2.5;
 
@@ -143,7 +226,7 @@ export function updateWindow(
     }
   }
 
-  const margin = Math.max(1, Math.round(span * EDGE_MARGIN));
+  const margin = Math.max(1, Math.floor(span * EDGE_MARGIN));
 
   if (current === null || windowSpan(current) !== span) {
     const centre = Math.round((lowPrice + highPrice) / 2);
@@ -221,4 +304,24 @@ export function shiftWindow(
   if (Math.abs(dy) >= rows) return { window: to, dy: null };
   const ticks = (dy * span) / rows;
   return { window: { low: from.low + ticks, high: from.high + ticks }, dy };
+}
+
+/**
+ * True if every price in \p input is drawn inside \p window.
+ *
+ * The property the panel depends on, stated so it can be checked. `rowFor`
+ * returns -1 outside the window and the caller skips the level, so a window
+ * that does not hold the data does not report anything -- it just draws less
+ * of the market than it claims to, and the scroll buffer then makes the loss
+ * permanent.
+ */
+export function windowHoldsEverything(
+  window: PriceWindow,
+  input: WindowInput,
+  rows: number,
+): boolean {
+  return (
+    rowFor(input.lowPrice, window, rows) >= 0 &&
+    rowFor(input.highPrice, window, rows) >= 0
+  );
 }

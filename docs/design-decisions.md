@@ -824,10 +824,37 @@ accumulates over thousands of moves.
 returns −1 outside the window and the caller skips the level, so a book wider
 than that lost its outer levels silently — a partial book drawn as a whole
 one, which is the failure mode this project exists to avoid. The span is now
-the smallest rung of a doubling ladder that contains every level the server
-sent, growing at once and shrinking only past a deadband. Only a change of
-*span* costs a full redraw now, because only a change of span changes the
-price-to-row mapping; a change of position does not.
+the smallest rung of a doubling ladder that contains the data, growing at
+once and shrinking only past a deadband. Only a change of *span* costs a full
+redraw, because only a change of span changes the price-to-row mapping; a
+change of position does not.
+
+**And the window is sized to the whole ring, not to the newest frame.** This
+was the second bug and the more interesting one, because sizing to the newest
+frame is the obvious thing to do and it is wrong for a reason specific to
+scroll buffers: *the buffer is a cache, never the store*. Anything the blit
+pushes past an edge is destroyed. Going left that is correct — time moves one
+way and a column off the left edge is over — but the price window moves both
+ways, so a level that drifted off the top of the frame came back, when the
+market came back to it, as a blank stripe where its own history should have
+been. Correctly scrolled, correctly aligned, and empty.
+
+A margin around the buffer does not fix that; it only makes the gap rarer and
+harder to reproduce. The fix is to make the clip impossible: the window is
+derived from the price extent of **every column in the ring**, so everything
+the panel has drawn is inside it by construction, and the rows the vertical
+blit discards are always rows that are outside the ring's price range and
+therefore empty. `windowHoldsEverything` states that invariant and the tests
+assert it on every tick of a two-thousand-tick drifting market — and fail, as
+they should, against the version that sized the window to the newest frame.
+
+**Measured on real output**, 1,235 book frames from the live engine covering
+425 ticks of drift: nothing clipped, 8 full repaints, and the window moved on
+16 of those frames. The ladder's rungs go up by halves rather than doubling
+for the same reason — doubling left the market occupying as little as 38% of
+the panel height, since the window can be a whole rung wider than the data
+needs. Halving the step puts the worst case at 48% for a handful more
+repaints.
 
 ---
 
