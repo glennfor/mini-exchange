@@ -315,18 +315,18 @@ vendored.
 
 ```bash
 cmake --preset release && cmake --build build/release
-ctest --preset release                     # 283 tests
+ctest --preset release                     # 284 tests
 
 # the Python oracle and the viz server
 python3.11 -m venv .venv && .venv/bin/pip install -e '.[dev]'
 .venv/bin/python -m pytest                 # 113 tests
 
 # the UI
-cd viz/ui && npm install && npm test       # 52 tests
+cd viz/ui && npm install && npm test       # 51 tests
 ```
 
 Verified from a fresh `git clone` on the development machine: **12 seconds to
-build, 13 seconds to run all 283 C++ tests.** That check is worth running
+build, 13 seconds to run all 284 C++ tests.** That check is worth running
 rather than assuming — it is how the missing LOBSTER fixture in the "what I
 got wrong" list below was found.
 
@@ -476,18 +476,28 @@ the code. The list is the most honest thing in this README.
     someone looking at the running dashboard: *"it is moving around a bit …
     they are out of bounds it looks quite jumpy."*
 
-    **And my first fix for it was wrong**, in the way that is worth writing
-    down. I made the window move smoothly and sized it to the current book —
-    and shipped it, because every test passed and the invariant I had thought
-    to state ("no level from *this frame* is clipped") held. The same person
-    came back: history that drifted off the top of the frame came back as a
-    blank stripe. A scroll buffer is a **cache, never a store** — whatever the
-    blit pushes past an edge is destroyed, and while that is correct going
-    left, where time only moves one way, the price axis moves both ways. The
-    window has to be sized to the extent of *every column in the ring*, so
-    that the rows the blit discards are provably empty ones. A bigger buffer
-    would only have made the gap rarer. The lesson is about where I looked:
-    I verified the frame I was drawing and not the history I was keeping.
+    **And it took two more goes to fix.** The first shipped because every test
+    passed and the invariant I had thought to state — "no level from *this
+    frame* is clipped" — held. The same person came back: history that drifted
+    off the top of the frame came back as a blank stripe. A scroll buffer is a
+    **cache, never a store**; whatever the blit pushes past an edge is
+    destroyed, and while that is correct going left, where time only moves one
+    way, the price axis moves both ways. I had verified the frame I was
+    drawing and not the history I was keeping.
+
+    **The second was wrong too, in the opposite direction.** I made the clip
+    impossible by sizing the window to the extent of every column in the ring.
+    Nothing could leave the frame — and a 40-tick book was drawn as a hairline
+    on an axis covering the 400 ticks the price had wandered over the last
+    thirty seconds. *"Just squashing everything into the window means it looks
+    tiny; I don't have an issue with it going out of bounds vertically — the
+    issue was that if it comes back into view it should not be cut off."*
+    Which is the correct requirement, and not the one I had solved. The
+    answer was never the window: the offscreen canvas is five window-heights
+    tall and is never scrolled vertically, so the window moves by taking a
+    different slice and destroys nothing. Measured over 1,235 frames of real
+    engine output in which prices left the frame 268 million times: zero gaps,
+    four full repaints.
 
 22. **The dashboard showed a book the engine could not have held** — bids at
     100.2195 against asks at 100.1840, crossed by 355 ticks and stuck that

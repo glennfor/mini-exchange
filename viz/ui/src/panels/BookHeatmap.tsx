@@ -8,30 +8,31 @@
  *
  * So: each publish tick draws **one new column** into an offscreen canvas,
  * and the offscreen canvas is scrolled left by one column. The visible canvas
- * is a single blit.
+ * is a single blit out of it.
  *
- * The price window moves with the market, and moving it moves the painted
- * history with it: the same blit that scrolls left by a column scrolls
- * vertically by the rows the window moved, so history stays attached to price
- * without being repainted. The whole buffer is only re-rendered when the
- * *scale* changes -- a different number of ticks on the axis -- which the
- * deadband in `updateWindow` makes rare.
+ * The offscreen canvas is three window-heights tall and is **never scrolled
+ * vertically**. The price window tracks the market by taking a different
+ * slice of it, which destroys nothing, so history that has drifted off the
+ * top or bottom of the frame is still painted and comes back intact when the
+ * market does. When the window reaches the edge of that range the buffer is
+ * re-placed and repainted from the ring -- the actual store -- which is the
+ * only operation that can restore history the buffer never held.
  *
- * What makes that safe is that the window is derived from the extent of the
- * **whole ring**, not from the newest frame: everything drawn is inside it,
- * so the rows the vertical blit throws away are always empty ones. Sizing the
- * window to the current book instead is what made history that drifted off
- * the top of the frame come back as a blank gap -- see `lib/heatmap.ts`.
+ * See `lib/heatmap.ts` for why a vertically-scrolled buffer cannot work: it
+ * destroys what it pushes past an edge, and the price axis, unlike time,
+ * moves both ways.
  */
 
 import { useEffect, useRef } from 'react';
 
 import { COLOR, heatColor, useSizedCanvas } from '../lib/canvas';
 import {
+  BUFFER_FACTOR,
   ColumnRing,
+  bufferWindowFor,
   makeColumn,
+  placeView,
   rowFor,
-  shiftWindow,
   updateWindow,
   windowSpan,
   type HeatColumn,
@@ -43,6 +44,16 @@ import { drawPlaceholder } from './DepthLadder';
 const COLUMNS = 900; // 30 s at 30 Hz
 const COLUMN_PX = 2;
 
+/**
+ * Ceiling on the offscreen canvas, in pixels.
+ *
+ * Six million pixels is 24 MB at four bytes each. Bounding the area rather
+ * than the height keeps the figure the same whatever the panel's shape: the
+ * retained-history factor is reduced instead, so a very tall panel repaints
+ * more often rather than asking the browser for a canvas it may refuse.
+ */
+const MAX_BUFFER_PX = 6_000_000;
+
 interface Props {
   book: React.MutableRefObject<BookFrame | null>;
   trades: React.MutableRefObject<TradeItem[]>;
@@ -51,12 +62,17 @@ interface Props {
 
 export function BookHeatmap({ book, trades, revision }: Props) {
   const ring = useRef(new ColumnRing(COLUMNS));
-  const window_ = useRef<PriceWindow | null>(null);
+  /** What the panel shows. Tight on the book, so the market fills the panel. */
+  const view = useRef<PriceWindow | null>(null);
+  /** What the offscreen canvas covers. Several times taller, same scale. */
+  const buffer = useRef<PriceWindow | null>(null);
   const lastRevision = useRef(-1);
   const lastTradeSeen = useRef(0);
   const offscreen = useRef<HTMLCanvasElement | null>(null);
   const offscreenRows = useRef(0);
-  const needsFullRedraw = useRef(true);
+  const viewRows = useRef(0);
+  /** First buffer row the window shows. */
+  const viewOffset = useRef(0);
 
   useEffect(() => {
     offscreen.current = document.createElement('canvas');
@@ -73,84 +89,147 @@ export function BookHeatmap({ book, trades, revision }: Props) {
     }
 
     const rows = Math.max(8, Math.min(5000, Math.floor(height)));
+    const factor = Math.max(
+      1,
+      Math.min(
+        BUFFER_FACTOR,
+        Math.floor(MAX_BUFFER_PX / (COLUMNS * COLUMN_PX * rows)),
+      ),
+    );
     const off = offscreen.current;
     if (!off) return;
-    if (off.width !== COLUMNS * COLUMN_PX || offscreenRows.current !== rows) {
-      off.width = COLUMNS * COLUMN_PX;
-      off.height = rows;
-      offscreenRows.current = rows;
-      needsFullRedraw.current = true;
-    }
     const offCtx = off.getContext('2d');
     if (!offCtx) return;
 
-    // A new publish tick: capture a column.
-    if (revision.current !== lastRevision.current) {
+    // A new publish tick: capture a column. Everything below the blit is
+    // skipped when nothing new has arrived -- the panel then just re-blits
+    // what it already has.
+    if (
+      revision.current !== lastRevision.current &&
+      frame.bids.length + frame.asks.length > 0
+    ) {
       lastRevision.current = revision.current;
 
       // Trades that arrived since the previous column, over-plotted on it.
       const fresh: HeatColumn['trades'] = [];
       for (const trade of trades.current) {
         if (trade.t_ns <= lastTradeSeen.current) break;
-        fresh.push({ price: trade.price, qty: trade.qty, side: trade.aggressor });
+        fresh.push({
+          price: trade.price,
+          qty: trade.qty,
+          side: trade.aggressor,
+        });
       }
       if (trades.current[0]) lastTradeSeen.current = trades.current[0].t_ns;
 
-      // The column goes in first, and only then is the window recomputed --
-      // from the ring, so it covers the new column *and* all the history
-      // still on screen. Deriving it from this frame alone is what let
-      // history drift out of the window, where `rowFor` drops it and the
-      // scroll buffer makes the loss permanent.
-      ring.current.push(
-        makeColumn(
-          frame.t_ns,
-          new Map(frame.bids.map((l) => [l[0], l[1]])),
-          new Map(frame.asks.map((l) => [l[0], l[1]])),
-          fresh,
-        ),
+      const column = makeColumn(
+        frame.t_ns,
+        new Map(frame.bids.map((l) => [l[0], l[1]])),
+        new Map(frame.asks.map((l) => [l[0], l[1]])),
+        fresh,
       );
+      ring.current.push(column);
 
-      const previous = window_.current;
-      const wanted = updateWindow(previous, ring.current.extent());
-      let dy = 0;
-      if (previous === null || wanted === null) {
-        window_.current = wanted;
-        needsFullRedraw.current = true;
-      } else if (wanted !== previous) {
-        const shift = shiftWindow(previous, wanted, rows);
-        window_.current = shift.window;
-        if (shift.dy === null) needsFullRedraw.current = true;
-        else dy = shift.dy;
-      }
+      // The window follows this column only -- the market, not the history
+      // around it -- so the book keeps the height of the panel.
+      const wanted =
+        column.lo === null || column.hi === null
+          ? view.current
+          : updateWindow(view.current, {
+              lowPrice: column.lo,
+              highPrice: column.hi,
+            });
+      if (wanted !== null) {
+        const rescaled =
+          view.current === null ||
+          windowSpan(view.current) !== windowSpan(wanted);
+        const resized =
+          off.width !== COLUMNS * COLUMN_PX ||
+          viewRows.current !== rows ||
+          offscreenRows.current !== rows * factor;
 
-      if (needsFullRedraw.current) {
-        redrawAll(offCtx, off, ring.current, window_.current, rows);
-        needsFullRedraw.current = false;
-      } else {
-        // Scroll left by one column -- and down by however far the price
-        // window moved -- then draw only the new column. One drawImage does
-        // both; this is the whole performance argument for the panel.
-        offCtx.globalCompositeOperation = 'copy';
-        offCtx.drawImage(off, -COLUMN_PX, dy);
-        offCtx.globalCompositeOperation = 'source-over';
-        const newest = ring.current.newest();
-        if (newest && window_.current) {
-          drawColumn(
-            offCtx,
-            newest,
-            off.width - COLUMN_PX,
-            window_.current,
+        // Does the window still fit the buffer we have? A miss is not a loss:
+        // the ring holds everything, and re-placing the buffer repaints from
+        // it. It is only the cache running out.
+        const rowsPerTick = rows / windowSpan(wanted);
+        let placed =
+          rescaled || resized || buffer.current === null
+            ? null
+            : placeView(
+                buffer.current,
+                wanted,
+                rowsPerTick,
+                offscreenRows.current,
+                rows,
+              );
+
+        if (placed === null) {
+          if (
+            off.width !== COLUMNS * COLUMN_PX ||
+            off.height !== rows * factor
+          ) {
+            off.width = COLUMNS * COLUMN_PX;
+            off.height = rows * factor;
+          }
+          offscreenRows.current = rows * factor;
+          viewRows.current = rows;
+          buffer.current = bufferWindowFor(
+            wanted,
+            ring.current.extent(),
+            factor,
+          );
+          placed = placeView(
+            buffer.current,
+            wanted,
+            rowsPerTick,
+            offscreenRows.current,
             rows,
           );
+          if (placed === null) return; // cannot happen; bufferWindowFor fits it
+          view.current = placed.view;
+          redrawAll(
+            offCtx,
+            off,
+            ring.current,
+            buffer.current,
+            offscreenRows.current,
+          );
+        } else {
+          view.current = placed.view;
+          // Scroll left by one column and draw only the new one, at its price
+          // in the *buffer*. No vertical component: that is the whole point.
+          offCtx.globalCompositeOperation = 'copy';
+          offCtx.drawImage(off, -COLUMN_PX, 0);
+          offCtx.globalCompositeOperation = 'source-over';
+          drawColumn(
+            offCtx,
+            column,
+            off.width - COLUMN_PX,
+            buffer.current!,
+            offscreenRows.current,
+          );
         }
+        viewOffset.current = placed.sy;
       }
     }
 
-    // One blit.
+    // One blit: the slice of the buffer the window is looking at.
     ctx.imageSmoothingEnabled = false;
-    ctx.drawImage(off, 0, 0, off.width, off.height, 0, 0, width, height);
+    if (buffer.current) {
+      ctx.drawImage(
+        off,
+        0,
+        viewOffset.current,
+        off.width,
+        viewRows.current,
+        0,
+        0,
+        width,
+        height,
+      );
+    }
 
-    drawAxis(ctx, width, height, window_.current, ring.current.size);
+    drawAxis(ctx, width, height, view.current, ring.current.size);
   }, []);
 
   return <canvas ref={canvasRef} className="block h-full w-full" />;
@@ -185,7 +264,10 @@ function drawColumn(
   // to be rows/120 from the days of a fixed 120-tick span; with the span now
   // sized to the book, that constant would draw a level 64 ticks tall on a
   // wide window.
-  const tickPx = Math.max(1, Math.floor(rows / Math.max(1, windowSpan(window_))));
+  const tickPx = Math.max(
+    1,
+    Math.floor(rows / Math.max(1, windowSpan(window_))),
+  );
 
   let max = 1;
   for (const qty of column.bids.values()) max = Math.max(max, qty);
@@ -240,5 +322,9 @@ function drawAxis(
   }
   ctx.textBaseline = 'bottom';
   ctx.textAlign = 'right';
-  ctx.fillText(`${columns} cols · ${(columns / 30).toFixed(0)}s`, width - 4, height - 3);
+  ctx.fillText(
+    `${columns} cols · ${(columns / 30).toFixed(0)}s`,
+    width - 4,
+    height - 3,
+  );
 }

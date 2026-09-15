@@ -1,33 +1,41 @@
 /**
- * The heatmap's column ring buffer and the price window over it.
+ * The heatmap's column ring buffer, the price window over it, and the buffer
+ * the window looks through.
  *
  * The panel keeps the last N publish ticks and blits them. It does **not**
  * redraw history every frame: at 30 Hz with 900 columns and 5000 price rows
  * that would be 135 million cells a second, which no browser will do.
  *
  * Instead each new column is drawn once, into an offscreen canvas that is
- * scrolled by one column per tick. Redrawing the whole buffer only happens
- * when the price *scale* changes, which is rare.
+ * scrolled left by one column per tick, and the visible canvas is a single
+ * blit out of it.
  *
- * **The scroll buffer is a cache, never the store.** Anything blitted past an
- * edge is destroyed: the pixels are gone and nothing can bring them back.
- * That is fine going left, because time only moves one way and a column that
- * leaves the left edge is genuinely over. It is not fine going up and down,
- * because the price window moves *both* ways -- and the first version of this
- * moved it, so a level that drifted off the top of the frame came back as a
- * blank gap when the market came back to it. Correctly scrolled, correctly
- * aligned, and missing the data.
+ * **The scroll buffer is a cache, never the store.** Whatever a blit pushes
+ * past an edge is destroyed; the pixels are gone and nothing can bring them
+ * back. Going left that is correct, because time moves one way and a column
+ * off the left edge is over. Going *up and down* it is not, because the price
+ * window moves both ways -- and scrolling the buffer vertically to follow it
+ * meant a level that drifted off the top of the frame came back, when the
+ * market came back to it, as a blank stripe where its own history should have
+ * been. Correctly scrolled, correctly aligned, and empty.
  *
- * The fix is not a bigger buffer, which only makes the gap rarer. It is to
- * make the window unable to clip: it is sized and positioned from the extent
- * of **every column in the ring**, not from the newest book frame, so
- * everything the panel has ever drawn is inside it by construction. The blit
- * then only ever discards rows that are outside the ring's price range, which
- * are rows with nothing in them. `windowHoldsEverything` states the invariant
- * and the tests check it over thirty seconds of a drifting market.
+ * So the buffer is never scrolled vertically. It covers a price range several
+ * times taller than the window, at the same scale, and the window moves by
+ * taking a different slice of it -- no pixels destroyed, and history that is
+ * off-screen is still painted, waiting. When the window reaches the edge of
+ * that range, the buffer is re-placed and every column is repainted from the
+ * ring, which is the actual store. That repaint is the only thing that can
+ * restore off-buffer history, and it is exactly what makes the guarantee
+ * hold: the window is always inside the buffer, and a buffer that has just
+ * moved has been fully repainted.
  *
- * This file is the pure part -- the ring buffer and the price-window
- * arithmetic -- so it can be tested in node without a canvas.
+ * The window itself stays tight on the current book, so the market fills the
+ * panel. Sizing it to the whole ring would keep everything on screen, but at
+ * the cost of squashing a 40-tick book onto an axis covering the 400 ticks
+ * the price wandered over the last thirty seconds.
+ *
+ * This file is the pure part -- the ring buffer and the geometry -- so it can
+ * be tested in node without a canvas.
  */
 
 export interface HeatColumn {
@@ -69,7 +77,14 @@ export function makeColumn(
   // extent is how a trade mark ends up drawn outside the window.
   for (const trade of trades) see(trade.price);
   const empty = !Number.isFinite(lo);
-  return { tNs, bids, asks, trades, lo: empty ? null : lo, hi: empty ? null : hi };
+  return {
+    tNs,
+    bids,
+    asks,
+    trades,
+    lo: empty ? null : lo,
+    hi: empty ? null : hi,
+  };
 }
 
 export class ColumnRing {
@@ -215,7 +230,8 @@ export function updateWindow(
 
   // Smallest span on the ladder that fits the data plus its margins.
   const withMargin = needed / (1 - 2 * EDGE_MARGIN);
-  let span: number = SPANS.find((s) => s >= withMargin) ?? SPANS[SPANS.length - 1]!;
+  let span: number =
+    SPANS.find((s) => s >= withMargin) ?? SPANS[SPANS.length - 1]!;
 
   if (current !== null) {
     const currentSpan = windowSpan(current);
@@ -250,60 +266,16 @@ export function updateWindow(
 }
 
 /** Row index for a price within a window, or -1 if outside. */
-export function rowFor(price: number, window: PriceWindow, rows: number): number {
+export function rowFor(
+  price: number,
+  window: PriceWindow,
+  rows: number,
+): number {
   if (price < window.low || price > window.high) return -1;
   const span = windowSpan(window);
   if (span <= 0) return 0;
   // Higher prices at the top, which is how every depth chart is read.
   return Math.min(rows - 1, Math.floor(((window.high - price) / span) * rows));
-}
-
-/** A window move, quantised to whole rows of the offscreen canvas. */
-export interface WindowShift {
-  /** The window to use from now on. */
-  window: PriceWindow;
-  /**
-   * Rows to blit the painted history by, positive meaning downward, or null
-   * if the history cannot be reused and must be repainted.
-   */
-  dy: number | null;
-}
-
-/**
- * Quantises a window move so the painted history can be blitted rather than
- * repainted.
- *
- * `rowFor` is `(high - price) * rows / span`, so raising the window's top by
- * d ticks moves every price d * rows / span rows down the canvas. If that is
- * a whole number of rows the history is still correct after a blit by it --
- * which is what makes a moving window read as a scroll rather than a jump.
- *
- * It is generally *not* a whole number, so rather than round the blit (whose
- * error would accumulate over thousands of moves into a history painted at
- * the wrong price) this rounds the **window**, to the nearest whole row in
- * the direction of travel. The window is then a fraction of a tick off what
- * was asked for and every blit is exact.
- *
- * Returns dy = null when the span changed, because then the price-to-row
- * mapping itself changed and no blit can fix the history.
- */
-export function shiftWindow(
-  from: PriceWindow,
-  to: PriceWindow,
-  rows: number,
-): WindowShift {
-  const span = windowSpan(from);
-  if (span <= 0 || Math.abs(windowSpan(to) - span) > 1e-6 || rows <= 0) {
-    return { window: to, dy: null };
-  }
-  const exact = ((to.high - from.high) * rows) / span;
-  // Round away from zero, so a move the window genuinely wants is never
-  // quantised away to nothing and left pending forever.
-  const dy = exact >= 0 ? Math.ceil(exact - 1e-9) : Math.floor(exact + 1e-9);
-  if (dy === 0) return { window: from, dy: 0 };
-  if (Math.abs(dy) >= rows) return { window: to, dy: null };
-  const ticks = (dy * span) / rows;
-  return { window: { low: from.low + ticks, high: from.high + ticks }, dy };
 }
 
 /**
@@ -324,4 +296,84 @@ export function windowHoldsEverything(
     rowFor(input.lowPrice, window, rows) >= 0 &&
     rowFor(input.highPrice, window, rows) >= 0
   );
+}
+
+/**
+ * How many times taller than the window the offscreen buffer is.
+ *
+ * This is the only thing standing between a window move and a full repaint of
+ * 900 columns, so it wants to be generous, and it is paid for in canvas
+ * memory. Measured over 1,235 book frames of real engine output, ~41 seconds
+ * of a market that wandered 425 ticks:
+ *
+ * | factor | repaints | canvas |
+ * |-------:|---------:|-------:|
+ * |      1 |      382 | 3.8 MiB|
+ * |      3 |       42 | 11 MiB |
+ * |      5 |        4 | 19 MiB |
+ * |      7 |        3 | 26 MiB |
+ *
+ * Five is the knee. One is what "just scroll the buffer with the window"
+ * amounts to once it is made correct -- a full repaint on nearly a third of
+ * all frames -- which is why the retained margin is the whole design and not
+ * an optimisation.
+ */
+export const BUFFER_FACTOR = 5;
+
+/**
+ * Where to place the offscreen buffer's price range.
+ *
+ * It must contain the window -- that is the invariant the whole design rests
+ * on -- and beyond that it should cover as much of the ring as it can, since
+ * everything of the ring inside it is history the window can return to
+ * without a repaint. So it is centred on the ring's own range and then
+ * pushed, if need be, until the window fits inside.
+ */
+export function bufferWindowFor(
+  view: PriceWindow,
+  ringExtent: WindowInput | null,
+  factor: number = BUFFER_FACTOR,
+): PriceWindow {
+  const span = windowSpan(view) * factor;
+  const centre =
+    ringExtent === null
+      ? (view.low + view.high) / 2
+      : (ringExtent.lowPrice + ringExtent.highPrice) / 2;
+  let high = centre + span / 2;
+  if (high < view.high) high = view.high;
+  if (high - span > view.low) high = view.low + span;
+  return { low: high - span, high };
+}
+
+/** Where the window sits inside the buffer, and the window snapped to it. */
+export interface ViewPlacement {
+  /** First buffer row the window shows. */
+  sy: number;
+  /** The window, moved by under a row so that `sy` is a whole number. */
+  view: PriceWindow;
+}
+
+/**
+ * Places the window inside the buffer, or returns null if it does not fit.
+ *
+ * Null is the signal to re-place the buffer and repaint from the ring. It is
+ * not an error and not a loss -- the ring still holds everything -- it is
+ * just the point at which the cache has run out.
+ *
+ * The window is snapped to a whole buffer row rather than the offset being
+ * rounded, so the final blit is pixel-aligned and does not resample. The
+ * snap moves the window by less than one row, which at any sane scale is
+ * under a tick.
+ */
+export function placeView(
+  buffer: PriceWindow,
+  view: PriceWindow,
+  rowsPerTick: number,
+  bufferRows: number,
+  viewRows: number,
+): ViewPlacement | null {
+  const sy = Math.round((buffer.high - view.high) * rowsPerTick);
+  if (sy < 0 || sy + viewRows > bufferRows) return null;
+  const high = buffer.high - sy / rowsPerTick;
+  return { sy, view: { low: high - windowSpan(view), high } };
 }

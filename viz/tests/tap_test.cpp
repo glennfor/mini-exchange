@@ -26,9 +26,15 @@ namespace {
 /// A unique segment name per test, so a crashed run cannot poison the next.
 std::string unique_name(const char* prefix) {
   static std::atomic<int> counter{0};
-  return std::string("/miniex_test_") + prefix + "_" +
-         std::to_string(::getpid()) + "_" +
-         std::to_string(counter.fetch_add(1));
+  std::string name = std::string("/miniex_test_") + prefix + "_" +
+                     std::to_string(::getpid()) + "_" +
+                     std::to_string(counter.fetch_add(1));
+  // macOS caps a POSIX shared-memory name at 31 characters (PSHMNAMLEN) and
+  // shm_open just fails past it. Caught here, where the name is built, rather
+  // than as an unexplained `create` returning false three lines into a test.
+  EXPECT_LT(name.size(), 32U)
+      << "shared-memory name too long for macOS: " << name;
+  return name;
 }
 
 struct SegmentGuard {
@@ -332,6 +338,9 @@ TEST(TapStatsSnapshot, ReadsAreConsistentOrRetried) {
 }
 
 TEST(TapStatsSnapshot, ConcurrentWritesAreNeverSeenTorn) {
+  // Safety, against a writer that never stops. This says nothing about how
+  // *often* the reader gets through -- see the test below for that -- only
+  // that whatever it does get through is coherent.
   const std::string name = unique_name("seqlock");
   SegmentGuard guard(name);
   ShmTapWriter writer;
@@ -371,7 +380,58 @@ TEST(TapStatsSnapshot, ConcurrentWritesAreNeverSeenTorn) {
   }
   stop.store(true);
   producer.join();
-  EXPECT_GT(good, 1000) << "the reader should succeed most of the time";
+  EXPECT_GT(good, 0) << "the reader never got through at all, so this test "
+                        "checked nothing";
+}
+
+TEST(TapStatsSnapshot, AReaderGetsThroughAgainstARealisticWriter) {
+  // Liveness, and it has to be stated against a writer that pauses.
+  //
+  // A seqlock gives the writer absolute priority: it never waits, and a
+  // reader that sees the sequence move retries. So a writer in a tight loop
+  // can starve a reader indefinitely -- that is the design working, not a
+  // fault. Asserting "the reader succeeds most of the time" against the
+  // hostile writer above therefore asserted something about the *machine*:
+  // it held on an idle one and failed on a loaded one, 683 successes out of
+  // 20,000 when six test binaries ran at once. Never a torn read; just a lost
+  // race, over and over.
+  //
+  // The engine publishes stats once a second. At anything like that rate the
+  // window in which the sequence is odd is vanishing, and the reader getting
+  // through is a real property worth pinning down.
+  const std::string name = unique_name("live");
+  SegmentGuard guard(name);
+  ShmTapWriter writer;
+  ASSERT_TRUE(writer.create(name, 64));
+  ShmTapReader reader;
+  ASSERT_TRUE(reader.attach(name));
+
+  std::atomic<bool> stop{false};
+  std::thread producer([&] {
+    std::uint64_t n = 1;
+    while (!stop.load(std::memory_order_relaxed)) {
+      TapStats s{};
+      s.ops_per_sec = n;
+      s.p50_ns = static_cast<std::int64_t>(n);
+      s.orders_resting = n;
+      writer.publish_stats(s);
+      ++n;
+      std::this_thread::sleep_for(std::chrono::microseconds(200));
+    }
+  });
+
+  int good = 0;
+  for (int i = 0; i < 2000; ++i) {
+    TapStats got{};
+    if (!reader.read_stats(got)) continue;
+    ASSERT_EQ(got.p50_ns, static_cast<std::int64_t>(got.ops_per_sec));
+    ASSERT_EQ(got.orders_resting, got.ops_per_sec);
+    ++good;
+  }
+  stop.store(true);
+  producer.join();
+  EXPECT_GT(good, 1900) << "against a writer publishing every 200 us the "
+                           "reader should essentially always get through";
 }
 
 // --- the sink ---------------------------------------------------------------

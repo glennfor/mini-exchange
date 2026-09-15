@@ -813,48 +813,60 @@ running dashboard as the chart being "quite jumpy", which is exactly what it
 was.
 
 The window now moves by the *least* amount that brings the data back inside a
-margin, so a drifting market moves it a tick at a time; and the painted
-history moves with it in the same `drawImage` that scrolls it left, by the
-rows the window moved. That blit has to be a whole number of rows, so the
-**window** is rounded to the nearest row rather than the blit — rounding the
-blit would leave history painted at the wrong price, with an error that
-accumulates over thousands of moves.
+margin, so a drifting market moves it a tick at a time rather than in quarter-
+window jumps.
 
 **And the span is chosen, not fixed.** It was a constant 120 ticks. `rowFor`
 returns −1 outside the window and the caller skips the level, so a book wider
 than that lost its outer levels silently — a partial book drawn as a whole
 one, which is the failure mode this project exists to avoid. The span is now
-the smallest rung of a doubling ladder that contains the data, growing at
-once and shrinking only past a deadband. Only a change of *span* costs a full
-redraw, because only a change of span changes the price-to-row mapping; a
-change of position does not.
+the smallest rung of a ladder that contains the data, growing at once and
+shrinking only past a deadband. The rungs go up by halves rather than
+doubling: the window can be a whole rung wider than the data needs, and
+doubling left the market occupying as little as 38% of the panel height.
 
-**And the window is sized to the whole ring, not to the newest frame.** This
-was the second bug and the more interesting one, because sizing to the newest
-frame is the obvious thing to do and it is wrong for a reason specific to
-scroll buffers: *the buffer is a cache, never the store*. Anything the blit
-pushes past an edge is destroyed. Going left that is correct — time moves one
-way and a column off the left edge is over — but the price window moves both
-ways, so a level that drifted off the top of the frame came back, when the
-market came back to it, as a blank stripe where its own history should have
-been. Correctly scrolled, correctly aligned, and empty.
+**And the buffer is never scrolled vertically.** This was the second bug and
+the more interesting one, because scrolling it is the obvious thing to do and
+it is wrong for a reason specific to scroll buffers: *the buffer is a cache,
+never the store*. Whatever a blit pushes past an edge is destroyed. Going left
+that is correct — time moves one way and a column off the left edge is over —
+but the price axis moves both ways, so a level that drifted off the top of the
+frame came back, when the market came back to it, as a blank stripe where its
+own history should have been. Correctly scrolled, correctly aligned, and
+empty.
 
-A margin around the buffer does not fix that; it only makes the gap rarer and
-harder to reproduce. The fix is to make the clip impossible: the window is
-derived from the price extent of **every column in the ring**, so everything
-the panel has drawn is inside it by construction, and the rows the vertical
-blit discards are always rows that are outside the ring's price range and
-therefore empty. `windowHoldsEverything` states that invariant and the tests
-assert it on every tick of a two-thousand-tick drifting market — and fail, as
-they should, against the version that sized the window to the newest frame.
+The first repair was to stop the clip happening at all, by sizing the window
+to the extent of every column in the ring. It works, and it is the wrong
+trade: the axis then covers everything the price wandered over in thirty
+seconds, so a 40-tick book is drawn as a hairline on a 400-tick axis. Going
+out of frame is not the problem. Coming back to a gap is.
 
-**Measured on real output**, 1,235 book frames from the live engine covering
-425 ticks of drift: nothing clipped, 8 full repaints, and the window moved on
-16 of those frames. The ladder's rungs go up by halves rather than doubling
-for the same reason — doubling left the market occupying as little as 38% of
-the panel height, since the window can be a whole rung wider than the data
-needs. Halving the step puts the worst case at 48% for a handful more
-repaints.
+So the offscreen canvas covers a price range five times the window's, at the
+same scale, and the window moves by taking a different slice of it. Nothing is
+destroyed, so history that is off-screen is still painted and waiting. When
+the window reaches the edge of that range the buffer is re-placed and every
+column is repainted from the ring — the actual store — which is the only
+operation that can restore history the buffer never held. The invariant is
+that the window is always inside the buffer, and a buffer that has just moved
+has just been fully repainted; `placeView` returning null is precisely the
+point at which the cache has run out.
+
+**Measured over 1,235 book frames of real engine output** — ~41 seconds of a
+market that wandered 425 ticks, in which prices left the frame 268 million
+times:
+
+| buffer height | full repaints | canvas |
+|--------------:|--------------:|-------:|
+|      1 window |           382 | 3.8 MiB|
+|      3 windows|            42 | 11 MiB |
+|      5 windows|             4 | 19 MiB |
+|      7 windows|             3 | 26 MiB |
+
+Zero gaps at every height — correctness comes from the repaint, not the
+margin. Five windows is the knee, and one window is what "scroll the buffer
+with the window" degrades to once it is made correct: a full 900-column
+repaint on nearly a third of all frames. The retained margin is the design,
+not an optimisation on top of it.
 
 ---
 
