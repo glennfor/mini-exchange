@@ -59,7 +59,7 @@ answer is to add a print statement and rebuild.
 ## Testing
 
 ```bash
-npm test          # 51 tests
+npm test          # 52 tests
 npm run typecheck
 ```
 

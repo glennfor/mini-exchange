@@ -102,6 +102,17 @@ if [ "$MOCK" -eq 0 ]; then
   PIDS+=($!)
   sleep 1
 
+  # ...and one consumer. The reader owns the ring's tail: two servers on one
+  # segment each advance it, so each sees the fraction of the stream the other
+  # did not take and reconstructs a book out of the holes. Same class of fault
+  # as two producers, on the other end of the ring.
+  if pgrep -f "viz.server.server .*--shm $SHM( |$)" > /dev/null 2>&1; then
+    echo "a viz server is already reading $SHM. The tap has one consumer:" >&2
+    echo "the reader owns the ring's tail, so two of them split the stream" >&2
+    echo "between themselves. Stop it, or pass --shm with a different name." >&2
+    exit 2
+  fi
+
   say "starting the viz server on ws://127.0.0.1:$WS_PORT"
   "$PY" -m viz.server.server --shm "$SHM" --port "$WS_PORT" --symbol DEMO \
       --build-sha "$(git rev-parse --short HEAD 2>/dev/null || echo unknown)" &

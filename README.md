@@ -28,6 +28,7 @@ words people use loosely.
 | The ITCH decoder survives arbitrary bytes | **yes** — 233 M fuzz executions, 19 minutes, no crash, flat RSS |
 | Latency percentiles on a machine that can resolve them | **no** — see *Results* |
 | A screenshot of the dashboard | **no** — see *The dashboard* |
+| The dashboard's latency panel shows a curve | **no** — `tap_producer` does not time itself, by design; `engine_bench` is what measures |
 
 Everything in the "no" rows is implemented, tested, and one command away from
 running. It has not been run, and the documents say so rather than implying
@@ -291,6 +292,13 @@ calls, the tape renders newest-first, transport commands reach the socket, and
 the TypeScript and Python halves of the wire schema, which otherwise fails as
 a silently blank panel rather than an error.
 
+**The latency panel is empty under `demo.sh`, and says so.** `tap_producer`
+publishes zeros for the percentiles on purpose — the matching core does not
+time itself, because measuring latency is the benchmark harness's job and an
+engine that instruments its own hot path is measuring the instrumentation.
+The panel names `engine_bench` rather than showing "0 ns", which would be a
+measurement that was never taken, and a flattering one.
+
 The tap's contract is about what it does to the *engine*:
 
 * the engine's write is one bounded store into shared memory — no syscalls, no
@@ -322,7 +330,7 @@ python3.11 -m venv .venv && .venv/bin/pip install -e '.[dev]'
 .venv/bin/python -m pytest                 # 113 tests
 
 # the UI
-cd viz/ui && npm install && npm test       # 51 tests
+cd viz/ui && npm install && npm test       # 52 tests
 ```
 
 Verified from a fresh `git clone` on the development machine: **12 seconds to
@@ -346,6 +354,7 @@ Presets: `dev`, `ubsan`, `asan`, `tsan`, `fuzz`, `release`, `release-tap`,
 | `flow_profile` | the empirical flow mix and order-lifetime distribution |
 | `inject` | ITCH order flow into the engine, and the divergence table |
 | `tap_producer` | the engine writing into a shared-memory tap |
+| `tap_layout_dump` | the tap's binary layout, which the Python reader cross-checks against |
 
 ---
 
@@ -541,6 +550,24 @@ the code. The list is the most honest thing in this README.
     nothing, and failed. Calling `::operator new` directly is not elidable.
     Writing the guard in a form the optimiser can delete is the same mistake
     the guard exists to catch, one level down.
+
+27. **The dashboard reported a latency of zero nanoseconds.** `tap_producer`
+    publishes zeros for the percentiles on purpose — the matching core does
+    not time itself — and the panel rendered that as `0 ns` for p50, p99,
+    p99.9 and max, with the CDF beside it saying "no latency samples yet", as
+    though some were on the way. Four zeros and a patient placeholder, in a
+    project whose stated rule is that a panel must admit what it does not
+    have. It is the same fault as the blank panel standing in for a quiet
+    market, and it sat in every screenshot I took without my noticing. The
+    rows now read *not measured* and name `engine_bench`.
+
+28. **The second-producer guard only guarded one end of the ring.** After two
+    demos on one shared-memory segment cost real debugging time, I made
+    `demo.sh` refuse a second engine — and left the consumer side open. The
+    reader owns the ring's tail, so two viz servers on one segment each
+    advance it and each see the half of the stream the other did not take.
+    Fixing the end that bit me and not its mirror image is how a class of
+    bug survives the fix for one instance of it.
 
 ## What I would do next, in order
 

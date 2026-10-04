@@ -320,4 +320,26 @@ describe('the dashboard', () => {
     await settle(60);
     expect(screen.getByText(/4.5k prints not shown/)).toBeTruthy();
   });
+
+  it('does not report a latency of zero nanoseconds when none was measured', async () => {
+    // tap_producer publishes zeros for the percentiles on purpose -- the
+    // matching core does not time itself. Rendering that as "0 ns" claims a
+    // measurement that was never taken, and a flattering one.
+    render(<App />);
+    await settle();
+    const ws = FakeWebSocket.live[0]!;
+    await act(async () => {
+      ws.open();
+      ws.deliver({
+        v: 1, type: 'stats', ops_per_sec: 166_000,
+        p50_ns: 0, p99_ns: 0, p999_ns: 0, max_ns: 0,
+        orders_resting: 8_800, ring_drops: 0, schedule_misses: 0,
+        reader_lag: 0, reader_skipped: 0, book_resyncs: 0,
+      });
+    });
+    await settle(60);
+    expect(screen.queryByText('0 ns')).toBeNull();
+    expect(screen.getAllByText('not measured').length).toBeGreaterThan(0);
+    expect(screen.getByText(/does not time itself/)).toBeTruthy();
+  });
 });

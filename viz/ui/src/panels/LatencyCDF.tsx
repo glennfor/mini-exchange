@@ -12,6 +12,15 @@
  *
  * The server sends percentile points, not samples: five numbers per second
  * instead of five million.
+ *
+ * **It is often empty, and it has to say why.** `tap_producer` -- the engine
+ * behind `./scripts/demo.sh` -- publishes zeros for the percentiles on
+ * purpose: the matching core does not time itself, because measuring latency
+ * is the benchmark harness's job and an engine that instruments its own hot
+ * path is measuring the instrumentation. So the demo never produces a curve.
+ * Saying "no latency samples yet" to that is a panel implying samples are on
+ * their way when none ever will be, which is the same failure as a blank
+ * panel standing in for a quiet market.
  */
 
 import { useRef } from 'react';
@@ -41,8 +50,19 @@ export function LatencyCDF({ stats }: Props) {
     ctx.fillRect(0, 0, width, height);
 
     const s = latest.current;
-    if (!s || s.max_ns <= 0) {
-      drawPlaceholder(ctx, width, height, 'no latency samples yet');
+    if (!s) {
+      drawPlaceholder(ctx, width, height, 'waiting for a stats frame');
+      return;
+    }
+    if (s.max_ns <= 0) {
+      // Stats are arriving and carry no percentiles: this producer does not
+      // measure latency. Name the thing that does.
+      drawPlaceholder(
+        ctx,
+        width,
+        height,
+        'this producer does not measure latency \u2014 run engine_bench',
+      );
       return;
     }
 

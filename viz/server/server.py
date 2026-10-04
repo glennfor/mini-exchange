@@ -81,7 +81,7 @@ class Hub:
         """
         try:
             await asyncio.wait_for(ws.send(payload), self.send_timeout)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             self.dropped_slow += 1
             with contextlib.suppress(Exception):
                 await asyncio.wait_for(ws.close(), 0.1)
