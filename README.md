@@ -116,9 +116,9 @@ flow is dominated by cancels and they do not arrive in queue order.
 The overflow row is the other one worth looking at. `FastBook`'s resident
 ladder is O(1); prices outside its 131,072-tick window fall into a
 `std::map`, and on flow that lives there it runs at **44% of its own best
-case** and slower than the book it replaces. That is a real limitation of this design and it belongs
-in the results table rather than a footnote. See `docs/design-decisions.md`
-DD-022.
+case** and slower than the book it replaces. That is a real limitation of
+this design and it belongs in the results table rather than a footnote. See
+`docs/design-decisions.md` DD-022.
 
 ### End-to-end, open loop
 
@@ -333,10 +333,12 @@ python3.11 -m venv .venv && .venv/bin/pip install -e '.[dev]'
 cd viz/ui && npm install && npm test       # 52 tests
 ```
 
-Verified from a fresh `git clone` on the development machine: **12 seconds to
-build, 13 seconds to run all 284 C++ tests.** That check is worth running
-rather than assuming — it is how the missing LOBSTER fixture in the "what I
-got wrong" list below was found.
+Verified from a fresh `git clone` on the development machine (Apple M-series,
+Apple Clang 17): **13 s to configure and fetch the three dependencies, 18 s to
+build, 3 s to run all 284 C++ tests**, and the Python suite green against the
+clone with no virtualenv. That check is worth running rather than assuming —
+it is how the missing LOBSTER fixture in the "what I got wrong" list below was
+found, and the numbers above are re-measured rather than carried forward.
 
 Presets: `dev`, `ubsan`, `asan`, `tsan`, `fuzz`, `release`, `release-tap`,
 `release-portable`.
