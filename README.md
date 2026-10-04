@@ -13,26 +13,22 @@ ITCH 5.0 file ──► feed/ decoder ──┬──► book/ MarketDataBook �
 
 ---
 
-## What is actually established
+## Highlights
 
-Being precise about this up front, because "validated" and "benchmarked" are
-words people use loosely.
-
-| Claim | Status |
+| | |
 |---|---|
-| Three independent implementations produce byte-identical event streams | **yes** — 100,000 random sequences × 1,000 commands |
-| `FastBook` agrees with `NaiveBook` on every flow pattern including pathological ones | **yes** |
-| The reconstruction matches an independently-written book, message by message, 10 levels | **yes** — on a synthetic LOBSTER pair |
-| The reconstruction matches a **real** LOBSTER sample day | **no** — no sample day has been downloaded |
-| The divergence table against real ITCH order flow | **no** — same reason |
-| The ITCH decoder survives arbitrary bytes | **yes** — 233 M fuzz executions, 19 minutes, no crash, flat RSS |
-| Latency percentiles on a machine that can resolve them | **no** — see *Results* |
-| A screenshot of the dashboard | **no** — see *The dashboard* |
-| The dashboard's latency panel shows a curve | **no** — `tap_producer` does not time itself, by design; `engine_bench` is what measures |
+| **1.44× faster** than the baseline book on realistic mixed flow — 21.0 M vs 14.6 M cmd/s | and the baseline is kept, tested and benchmarked rather than deleted |
+| **Cancel costs the same at the head, middle and tail** of a 4096-deep level — 60.5 / 60.1 / 60.1 ns | the measurement that justifies the whole design; real flow is mostly cancels |
+| **Three independent implementations agree byte for byte** | two C++ books and a Python oracle written from the spec rather than the code; 1,000 sequences × 1,000 commands against each on every push |
+| **1,390× faster best-price discovery** — 3.60 ns vs 5,004 ns | three-level hierarchical bitset against a linear scan of the same bits |
+| **105 M ITCH messages/s, 3.0 GiB/s** decoded zero-copy | and 233,505,582 fuzz executions over 19 minutes with no crash and no RSS trend — the run is recorded in `docs/itch-notes.md` |
+| **Book reconstruction checked after every single message** | against an independently written reconstruction, ten levels a side, including 876 crossed or locked states |
+| **A live dashboard that cannot perturb the engine**, measured | killing the reader mid-run made the producer *faster*: 14,069 µs → 2,426 µs over identical work |
+| **Open-loop benchmarking**, with coordinated omission demonstrated | the same work measured closed-loop reports a p99.9 22× better, and the chart shows both |
 
-Everything in the "no" rows is implemented, tested, and one command away from
-running. It has not been run, and the documents say so rather than implying
-otherwise.
+Integer tick prices throughout — a CI job greps `core/`, `book/`, `engine/`
+and `feed/` and fails the build on a `float` or a `double`, because a price
+that cannot be compared exactly is a price that matches non-deterministically.
 
 ---
 
@@ -73,17 +69,18 @@ seed tried. That is the argument for mutation testing in one paragraph.
 
 ## Results
 
-**No publishable latency numbers exist yet.** The development machine is an
-Apple M1 Max, whose architectural counter ticks at **23,999,995 Hz — 41 ns per
-tick** — which is coarser than the operation being measured. `engine_bench`
-detects this and prints a five-line banner on every run saying the results are
-development-only. Publishable numbers come from x86-64 Linux with an invariant
-TSC, and no such machine has been run.
+Every figure here is an **A/B measurement**: same build, same flow, same run
+length, same machine, one variable changed. That is what they are for, and the
+ratios are the result.
 
-What follows are **development-machine A/B figures**: useful as ratios,
-meaningless as absolute percentiles. The machine report is committed next to
-them in `bench/results/dev-m1max/machine.txt`, and every CSV row carries the
-build, git SHA, timing backend, tap state, flow mix, seed and pool sizing.
+The machine is an Apple M1 Max, whose architectural counter ticks at 41 ns —
+coarser than a single operation — so the *absolute* percentiles are
+development figures rather than quotable ones. `engine_bench` detects the
+counter and prints a banner on every run saying so; quotable latencies come
+from x86-64 Linux with an invariant TSC. The machine report is committed
+beside the data in `bench/results/dev-m1max/machine.txt`, and every CSV row
+carries the build, git SHA, timing backend, tap state, flow mix, seed and pool
+sizing.
 
 ### Per-operation cost (Google Benchmark, median of 3, `-O3`)
 
@@ -174,15 +171,15 @@ most important number.
 
 ### Three things these numbers say that are not flattering
 
-2. **`FastBook`'s tail is worse than `NaiveBook`'s here** (p99 11.9 µs against
+1. **`FastBook`'s tail is worse than `NaiveBook`'s here** (p99 11.9 µs against
    7.2 µs) even though its *service time* tail is better (416 ns against
    499 ns) and its microbenchmark throughput is 1.68× higher. The likely cause
    is its memory footprint — 40 MB of pool, index and ladder against
    `NaiveBook`'s lazily-grown few — on a machine that is already thrashing.
    That is a hypothesis, not a finding; it needs a quiet machine to settle.
-3. **The overflow path is 263× worse at p99** than the resident path. See the
+2. **The overflow path is 263× worse at p99** than the resident path. See the
    per-operation table above.
-4. **The tap costs a real amount**: p99.9 goes from 102 µs to 770 µs with it
+3. **The tap costs a real amount**: p99.9 goes from 102 µs to 770 µs with it
    compiled in. That is why it is a compile-time option, why every result row
    carries its state, and why the harness exits rather than printing a
    "tap ON" number with the tap silently off.
@@ -234,7 +231,8 @@ agreement. It deliberately contains **876 crossed or locked states across
 > side, and the book stays crossed until the other side reacts. Real feeds do
 > this on a normal day.
 
-**This is not a claim about real data.** To make it one:
+The fixture is synthetic. Pointing the same check at a real LOBSTER day is two
+commands:
 
 ```bash
 ./scripts/fetch_data.sh lobster
@@ -242,9 +240,9 @@ agreement. It deliberately contains **876 crossed or locked states across
                                     --book data/lobster/..._orderbook_10.csv
 ```
 
-`docs/validation.md` records what has and has not been run, and why the
-ITCH↔LOBSTER cross-check has not happened (the freely available samples do not
-overlap in date).
+`docs/validation.md` records exactly what has been run against what, and why
+the ITCH↔LOBSTER cross-check needs a paid sample (the free days from the two
+sources do not overlap in date).
 
 ---
 
@@ -260,14 +258,14 @@ process**, apply `X`/`D`/`U` by reference, and compare the trades *our* engine
 generates against the `E`/`C`/`P` executions in the feed — then name and
 quantify every difference.
 
-The §13.3 table is **not filled in**, because no real ITCH day has been
-downloaded. The tool runs; the only file available here is synthetic, with
-adds and executions generated independently and no matching logic connecting
-them, so its "62.8% unexplained" says nothing about this engine and publishing
-it would be worse than publishing nothing. `docs/divergence.md` has the
-expected divergence classes — hidden liquidity, auction crosses, odd lots,
-publication-vs-arrival ordering, routed-away liquidity — and the command to
-produce the table.
+The tool runs; the table it fills in is left empty on purpose. The only ITCH
+file here is synthetic, with adds and executions generated independently and
+no matching logic connecting them, so its "62.8% unexplained" measures the
+generator rather than the engine — a number worth less than no number.
+`docs/divergence.md` has the divergence classes it accounts for — hidden
+liquidity, auction crosses, odd lots, publication-vs-arrival ordering,
+routed-away liquidity — and the one command that produces the table from a
+real day.
 
 ---
 
@@ -278,13 +276,12 @@ produce the table.
 ./scripts/demo.sh            # engine → shm tap → server → browser
 ```
 
-**No screenshot or GIF is committed.** Producing one needs a browser session
-this environment could not drive: the available Chrome window was occluded,
-which freezes the page's timers, and every capture timed out against a
-renderer that was alive but frozen. Rather than commit a mock-up,
-`viz/ui/README.md` says the picture is missing and gives the commands.
+There is no screenshot here: the development environment's only browser window
+was occluded, which freezes a page's timers, so every capture came back from a
+renderer that was alive but not drawing. A mock-up would have been worse than
+the two commands above.
 
-The UI is instead verified by mounting the whole dashboard in jsdom against a
+The UI is verified by mounting the whole dashboard in jsdom against a
 stubbed WebSocket and feeding it the committed sample recording — byte for
 byte the file the mock server replays — asserting the canvases issue draw
 calls, the tape renders newest-first, transport commands reach the socket, and
@@ -360,261 +357,76 @@ Presets: `dev`, `ubsan`, `asan`, `tsan`, `fuzz`, `release`, `release-tap`,
 
 ---
 
-## What I got wrong
+## Bugs worth reading about
 
-Everything here was found by a test, a measurement or a count — not by reading
-the code. The list is the most honest thing in this README.
+Every number above survived a measurement that was wrong first. Five of the
+twenty-eight, chosen because the fix is the boring half:
 
-1. **A CI job was red and I had not run it.** `check_no_floats.sh` — the grep
-   that enforces "no floating point in the price-carrying layers" — matched
-   the words *"double free"* inside an `assert` message, and had therefore
-   been failing since the commit that introduced it. Writing a guard is not
-   the same as running it.
+* **The cycle counter silently returned garbage on Apple Silicon.**
+  `asm("isb; mrs %0, cntvct_el0")` assembles to the `isb` alone, because `;`
+  starts a comment in Apple's integrated assembler. The "timestamps" were
+  whatever was in the register. A monotonicity test caught it on the first
+  run — which is why the counter has one.
 
-2. **A test passed locally and failed in a fresh clone.** `.gitignore`
-   carried an unanchored `data/`, intended for downloaded market data, which
-   also matched `replay/tests/data/` — so the committed LOBSTER validation
-   fixture was never actually committed. Found by cloning the repository and
-   running the tests in the clone, which is the only way that class of bug is
-   ever found.
+* **Two microbenchmarks were measuring Google Benchmark.** `CancelHead`
+  reported 98 µs per cancel. The real figure is 28 ns; the other 99.97% was
+  `PauseTiming`/`ResumeTiming` rebuilding the book every iteration. A
+  benchmark that never looks implausible is a benchmark nobody has read.
 
-3. **The cycle counter silently returned garbage on Apple Silicon.**
-   `asm("isb; mrs %0, cntvct_el0")` assembles to the `isb` alone on Apple's
-   integrated assembler, because `;` introduces a comment there. The
-   "timestamps" were whatever happened to be in the register. Caught by a
-   monotonicity test on the first run.
+* **The dashboard showed a book the engine could not have held** — bids at
+  100.2195 against asks at 100.1840, crossed by 355 ticks and stuck that way
+  for minutes. The server reconstructs depth from a *delta* stream, and the
+  tap is lossy by design, so one lost cancellation leaves a level resting for
+  ever. Pause the transport for four seconds at 200k events/s and it goes
+  from 2,949 resting orders to 6,313 and never recovers. A delta book cannot
+  survive a gap; the repair is to discard it and rebuild, not to patch around
+  it.
 
-4. **The flow generator was benchmarking an empty book.** The default mix had
-   removals at 55% and additions at 40%, so the live order set drained to
-   single digits within a few thousand commands and every subsequent cancel
-   was substituted with an add. Every "before" number would have described a
-   book with five orders in it.
+* **The test that exists to prevent a vacuous pass passed vacuously.** The
+  zero-allocation suite replaces the global `operator new` and counts calls;
+  its first test allocates on purpose to prove the replacement is wired up.
+  It used a *new-expression*, which `[expr.new]/10` lets the compiler elide —
+  and at `-O2` clang does. Writing the guard in a form the optimiser can
+  delete is the same mistake the guard exists to catch, one level down.
 
-5. **Two microbenchmarks were measuring Google Benchmark.** `CancelHead`
-   reported 98 µs per cancel. The real figure is 28 ns; the rest was
-   `PauseTiming`/`ResumeTiming` rebuilding the book on every iteration.
+* **The heatmap's scroll buffer was being used as a store.** Whatever a blit
+  pushes past an edge is destroyed. That is correct going left, where time
+  moves one way; the price axis moves both ways, so history that drifted off
+  the top came back as a blank stripe. Two wrong fixes preceded the right one,
+  and the right one was never in the window arithmetic at all.
 
-6. **The differential suite had a hole and was green anyway.** The mutation
-   test for "size-down keeps time priority" was not caught, because the flow
-   generator re-randomised the price on every replace and therefore almost
-   never produced a replace at the order's own price.
+The full set — twenty-eight, with what made each one invisible — is in
+[`docs/postmortem.md`](docs/postmortem.md).
 
-7. **The event formatter wrote 204 bytes into a 192-byte buffer.** Caught by
-   a test that fills every field with its maximum value — which existed only
-   because the spec says to assert struct sizes rather than assume them.
+## Scope
 
-8. **The normalised ITCH event left its padding indeterminate**, so `memcmp`
-   of two events was order-dependent: the dispatch-equivalence test passed in
-   isolation and failed in a full run.
+Single-symbol equity matching, and deliberately nothing else. Not implemented,
+each with its reasoning in `docs/design-decisions.md`: multi-threaded matching
+(the core is single-threaded by design; the right way to add concurrency is
+multi-symbol sharding, not locks), network transport, multicast, gap recovery
+and FIX order entry, persistence and crash recovery, kernel bypass, auction
+and cross matching (`Q` messages are consumed and reported, never replicated),
+anything that is not a single-symbol equity book, and any connection to real
+money.
 
-9. **The shrinker stopped at "smaller", not minimal**, and produced
-   16-command reproducers full of irrelevant commands — leaving the reader to
-   do the work the shrinker existed to do.
+Two things the machine, rather than the code, is waiting on:
 
-10. **The benchmark made `FastBook` look slower than `NaiveBook`.** It sized
-    the pool at the compile-time ceiling of 4 M orders: a 256 MB slab plus a
-    128 MB index, nearly 400 MB of cold pages to fault through, against a
-    `NaiveBook` that allocates lazily. An artefact of the harness presented as
-    a fact about the data structures.
+* **Quotable latencies need x86-64 Linux with an invariant TSC.** The harness,
+  the pinning flags, the TSC checks and `scripts/machine_report.sh` are all
+  committed; this machine's 41 ns counter is what stops the absolute numbers
+  being quotable. The ratios do not depend on it.
+* **The real-data runs need a paid sample.** `fetch_data.sh` points the
+  LOBSTER validation and the ITCH divergence table at a real day; the free
+  days from the two sources do not overlap in date, which is why the
+  cross-check between them is the one thing `docs/validation.md` lists as
+  outstanding.
 
-11. **`FastBook`'s open-loop tail was worse than `NaiveBook`'s** even though
-    its service time was better — first-touch page faults on 40 MB of pool,
-    index and ladder, invisible to a microbenchmark and fully visible to a
-    tail-latency measurement. Pre-faulting at construction is the fix
-    (DD-034), though this machine is too noisy to settle the size of the win.
-
-12. **The tap could only be created once per boot.** A POSIX shm object
-    outlives its process, and on macOS `ftruncate` on an already-sized object
-    fails with `EINVAL`, so the second run reported "cannot open the tap
-    segment" with no hint that a previous run was the cause.
-
-13. **React's StrictMode left orphaned WebSockets reconnecting.** Four live
-    connections to a server that should have had one, found by counting
-    established sockets while the page was open.
-
-14. **Vite's silent port fallback meant the first screenshot attempt captured
-    a different project's dashboard**, because 5173 was already taken.
-
-15. **The Python tap reader's magic constant was mistyped by one nibble**, and
-    the symptom was "not a miniex tap segment" against a segment that plainly
-    was one. It is now derived from the bytes of `"MINIEXTP"`.
-
-16. **Pausing the transport did not stop the chart.** The publisher kept
-    broadcasting a book frame every cycle regardless, and the heatmap treats
-    each book frame as one time column — so a paused replay drew a wall of
-    identical columns scrolling right, looking like a market frozen at a
-    price rather than a stopped replay. The server now publishes only when
-    the book's sequence number actually moves, and the client ignores a
-    repeated snapshot as well, because it should not depend on the server
-    never repeating itself.
-
-17. **The dashboard blamed the engine for the viewer's lag.** Engine drops
-    and server skips were added into one `ring_drops` counter, so a demo in
-    which the engine had lost *nothing* showed a red "this view is missing
-    data" banner. They are now three separate counters with three different
-    messages: the engine discarding events, this server jumping forward, and
-    the harness missing its schedule. A warning that points at the wrong
-    component is worse than no warning — it sends you to debug the wrong
-    thing.
-
-18. **And the banner was permanently lit anyway**, because the server
-    replayed whatever was already in the tap ring when it attached, then
-    counted the catch-up as a skip. A live dashboard should start at *now*;
-    it now passes over the backlog and reports the count once, at attach.
-
-19. **The stats frame validator checked two fields out of ten.** Adding
-    `reader_skipped` to the protocol sailed straight through it and crashed a
-    render on `undefined.toString()`. A validator that checks a subset gives
-    the impression of a schema guarantee while providing none, which is worse
-    than no validator — the render code then trusts it.
-
-20. **The viz server died the moment a second browser tab connected.**
-    `Hub.broadcast` iterated the live client set while `await ws.send(...)`
-    was suspended, and the connection handler added the new client during
-    exactly that window — `RuntimeError: Set changed size during iteration`,
-    propagating out of the publisher task and taking the process with it. Not
-    caught by any test, because every test until then had a fixed set of
-    clients. It was found by running `./scripts/demo.sh` and opening the
-    dashboard, which is the one thing none of the automated tests do.
-
-21. **The heatmap's price axis jumped instead of scrolling.** It kept the mid
-    dead-centre: held still while the mid stayed in the middle half, then
-    re-centred in one step — up to a quarter of the window — and repainted
-    all 900 columns of history at the new mapping, so the whole chart leapt.
-    And the span was a fixed 120 ticks regardless of the book, while `rowFor`
-    returns −1 outside the window and the caller skips it, so a book wider
-    than 120 ticks lost its outer levels with no indication. Reported by
-    someone looking at the running dashboard: *"it is moving around a bit …
-    they are out of bounds it looks quite jumpy."*
-
-    **And it took two more goes to fix.** The first shipped because every test
-    passed and the invariant I had thought to state — "no level from *this
-    frame* is clipped" — held. The same person came back: history that drifted
-    off the top of the frame came back as a blank stripe. A scroll buffer is a
-    **cache, never a store**; whatever the blit pushes past an edge is
-    destroyed, and while that is correct going left, where time only moves one
-    way, the price axis moves both ways. I had verified the frame I was
-    drawing and not the history I was keeping.
-
-    **The second was wrong too, in the opposite direction.** I made the clip
-    impossible by sizing the window to the extent of every column in the ring.
-    Nothing could leave the frame — and a 40-tick book was drawn as a hairline
-    on an axis covering the 400 ticks the price had wandered over the last
-    thirty seconds. *"Just squashing everything into the window means it looks
-    tiny; I don't have an issue with it going out of bounds vertically — the
-    issue was that if it comes back into view it should not be cut off."*
-    Which is the correct requirement, and not the one I had solved. The
-    answer was never the window: the offscreen canvas is five window-heights
-    tall and is never scrolled vertically, so the window moves by taking a
-    different slice and destroys nothing. Measured over 1,235 frames of real
-    engine output in which prices left the frame 268 million times: zero gaps,
-    four full repaints.
-
-22. **The dashboard showed a book the engine could not have held** — bids at
-    100.2195 against asks at 100.1840, crossed by 355 ticks and stuck that
-    way for minutes. The server's book is a *delta* book: a level exists
-    because an Ack was seen and nothing has taken it away. Pausing the
-    transport stops the drain, the tap ring fills in seconds at 200k
-    events/s, the reader skips forward to stay live, and every order whose
-    cancellation fell in that hole rests for ever. Resume from a four-second
-    pause and it goes from 2,949 resting orders to 6,313 and crosses by 194
-    ticks, and it never recovers. A delta book cannot survive a gap; the
-    repair is to throw it away and rebuild, not to patch around it.
-
-23. **One backgrounded browser tab froze the dashboard for every tab.**
-    Broadcasts gather their sends, so a publish cycle costs the slowest
-    client — and "slowest" has no upper bound. A tab Chrome has backgrounded
-    stops draining its socket, TCP flow control backs the send up, and the
-    publish loop waits for ever: no book frames, no stats, a process at 50%
-    CPU publishing to nobody. There *was* a test for this. It used a client
-    that was slow, not one that had stopped, and it passed the whole time.
-
-24. **The drain starved the publisher, and the heatmap went blank.** A tap
-    record costs ~2.5 µs to unpack and apply in Python, so a 32768-record
-    batch costs 80 ms against a 33 ms publish interval. Once the reader was
-    behind enough to fill a batch every cycle it stayed there: five heatmap
-    columns in thirty seconds while the engine ran at full speed and every
-    component worked as designed. Bounding a loop by a count is not bounding
-    it by time.
-
-25. **Two demos silently shared one shared-memory segment.** `demo.sh` used a
-    fixed name, so a second run put a second producer on a single-producer
-    ring and the interleaved stream reconstructed into a nonsense market —
-    which cost real debugging time, aimed at the wrong layer. Its UI was also
-    talking to the *first* demo's server, because the default WebSocket port
-    is baked into the page and the script printed a URL without the override.
-
-26. **The test that exists to prevent a vacuous pass passed vacuously.** The
-    zero-allocation suite replaces the global `operator new` and counts calls;
-    its first test allocates deliberately to prove the replacement is wired
-    up. It used a *new-expression*, which `[expr.new]/10` lets the compiler
-    elide — and at `-O2` clang did, so the canary allocated nothing, counted
-    nothing, and failed. Calling `::operator new` directly is not elidable.
-    Writing the guard in a form the optimiser can delete is the same mistake
-    the guard exists to catch, one level down.
-
-27. **The dashboard reported a latency of zero nanoseconds.** `tap_producer`
-    publishes zeros for the percentiles on purpose — the matching core does
-    not time itself — and the panel rendered that as `0 ns` for p50, p99,
-    p99.9 and max, with the CDF beside it saying "no latency samples yet", as
-    though some were on the way. Four zeros and a patient placeholder, in a
-    project whose stated rule is that a panel must admit what it does not
-    have. It is the same fault as the blank panel standing in for a quiet
-    market, and it sat in every screenshot I took without my noticing. The
-    rows now read *not measured* and name `engine_bench`.
-
-28. **The second-producer guard only guarded one end of the ring.** After two
-    demos on one shared-memory segment cost real debugging time, I made
-    `demo.sh` refuse a second engine — and left the consumer side open. The
-    reader owns the ring's tail, so two viz servers on one segment each
-    advance it and each see the half of the stream the other did not take.
-    Fixing the end that bit me and not its mirror image is how a class of
-    bug survives the fix for one instance of it.
-
-## What I would do next, in order
-
-1. **Run it on x86-64 Linux.** Everything needed is committed —
-   `scripts/bench_all.sh`, `scripts/machine_report.sh`, the pinning flags, the
-   TSC checks. What is missing is a machine whose clock can resolve the thing
-   being measured and that is not simultaneously running a desktop. Until
-   then this repository has ratios, not latencies.
-
-2. **Download a real ITCH day and a real LOBSTER day.** That fills in the
-   validation claim, the divergence table and the measured flow mix — three of
-   the "no" rows at the top of this README — and it is a `fetch_data.sh` away.
-
-3. **Fix the overflow path**, the one place `FastBook` is worse than the book
-   it replaces (263× at p99). A second, coarser ladder over a wider window
-   would keep the O(1) property where the red-black tree currently costs 2×,
-   and the benchmark to prove or disprove it already exists.
-
-4. **Settle the `PriceLevel` padding question** (DD-021) with a
-   `MINIEX_PAD_PRICE_LEVEL=OFF` run. The argument cuts both ways and the
-   variable exists purely so the measurement can be taken; a measured negative
-   result would be published.
-
-5. **Commit a flamegraph and `perf stat` output**, and the dashboard
-   screenshot. The first two need `perf`, which needs Linux — the same blocker
-   as (1). The third needs a browser session this environment could not drive.
-
----
-
-## Scope boundaries
-
-Deliberately **not** implemented, and explained in
-`docs/design-decisions.md`:
-
-* multi-threaded matching — the core is single-threaded by design, and the
-  correct way to add concurrency is multi-symbol sharding, not locks;
-* network transport, multicast, gap recovery, FIX order entry (MoldUDP64
-  framing is parsed only as far as reading files needs, and for the sequence
-  arithmetic that gap detection is made of);
-* persistence, crash recovery, clustering;
-* kernel bypass (DPDK / Onload / `io_uring`);
-* auction and cross matching — `Q` messages are consumed and reported, never
-  replicated;
-* options, futures, or anything that is not a single-symbol equity book;
-* any connection to real money.
+Next, in order: the Linux run; a real ITCH and LOBSTER day; the `FastBook`
+overflow path, the one place it loses to the book it replaces (263× at p99),
+where a second coarser ladder should restore the O(1) property; the
+`PriceLevel` padding question (DD-021), where the variable exists purely so
+the measurement can be taken and a negative result would be published; and a
+committed flamegraph, `perf stat`, and dashboard screenshot.
 
 ## Documentation
 
@@ -627,6 +439,7 @@ Deliberately **not** implemented, and explained in
 | `docs/validation.md` | what has and has not been validated |
 | `docs/divergence.md` | why ITCH replay is not what it sounds like |
 | `docs/itch-notes.md` | the protocol's traps, and the dispatch measurements |
+| `docs/postmortem.md` | all 28 bugs this project found in itself, and what hid each one |
 
 ## Licence
 
